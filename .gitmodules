@@ -1,0 +1,15 @@
+[submodule "ai-cli-session-collector"]
+	path = ai-cli-session-collector
+	url = git@github.com:vimo-ai/AI-cli-session-collector.git
+[submodule "claude-session-db"]
+	path = claude-session-db
+	url = git@github.com:vimo-ai/ai-cli-session-db.git
+[submodule "claude"]
+	path = claude
+	url = git@github.com:vimo-ai/vlaude.git
+[submodule "english"]
+	path = english
+	url = git@github.com:vimo-ai/ETerm.git
+[submodule "memex"]
+	path = memex
+	url = git@github.com:vimo-ai/memex.git
