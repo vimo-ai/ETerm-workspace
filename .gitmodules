@@ -4,11 +4,11 @@
 [submodule "claude-session-db"]
 	path = claude-session-db
 	url = git@github.com:vimo-ai/ai-cli-session-db.git
-[submodule "claude"]
-	path = claude
+[submodule "vlaude"]
+	path = vlaude
 	url = git@github.com:vimo-ai/vlaude.git
-[submodule "english"]
-	path = english
+[submodule "ETerm"]
+	path = ETerm
 	url = git@github.com:vimo-ai/ETerm.git
 [submodule "memex"]
 	path = memex

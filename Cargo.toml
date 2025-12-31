@@ -10,10 +10,11 @@ members = [
     "claude-session-db",
     "memex/memex-rs",
 ]
-# vlaude-core 是独立 workspace，通过 patch 共享依赖
+# vlaude-core 和 vlaude-daemon-rs 是独立项目，通过 patch 共享依赖
 exclude = [
-    "claude/packages/vlaude-core",
-    "english/rio",
+    "vlaude/packages/vlaude-core",
+    "vlaude/packages/vlaude-daemon-rs",
+    "ETerm/rio",
 ]
 
 [workspace.package]
