@@ -1,0 +1,60 @@
+# ETerm Workspace
+# 主仓库，管理所有 Rust 子项目的依赖和编译
+#
+# 子项目保持 git 依赖（独立可用），此 workspace 通过 [patch] 覆盖成本地路径
+
+[workspace]
+resolver = "2"
+members = [
+    "ai-cli-session-collector",
+    "claude-session-db",
+    "memex/memex-rs",
+]
+# vlaude-core 是独立 workspace，通过 patch 共享依赖
+exclude = [
+    "claude/packages/vlaude-core",
+    "english/rio",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/vimo-ai/ETerm"
+
+# ============================================================================
+# [patch] - 开发时使用本地版本，子项目保持 git 依赖以支持独立编译
+# ============================================================================
+
+[patch."https://github.com/vimo-ai/ai-cli-session-collector"]
+ai-cli-session-collector = { path = "ai-cli-session-collector" }
+
+# ============================================================================
+# Workspace 依赖 - 统一版本管理
+# ============================================================================
+
+[workspace.dependencies]
+# 内部 crates
+ai-cli-session-collector = { git = "https://github.com/vimo-ai/ai-cli-session-collector" }
+claude-session-db = { path = "claude-session-db" }
+
+# 异步
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4"] }

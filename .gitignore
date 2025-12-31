@@ -1,0 +1,24 @@
+# Rust
+target/
+Cargo.lock
+*.dylib
+
+# macOS
+.DS_Store
+Icon?
+
+# IDE
+.idea/
+*.xcuserdata/
+*.xcworkspace/
+
+# Temp
+*.log
+*.tmp
+
+# 子项目（通过 submodule 管理）
+# ai-cli-session-collector/
+# claude-session-db/
+# claude/
+# english/
+# memex/
