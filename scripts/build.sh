@@ -125,11 +125,18 @@ build_memex() {
         exit 1
     fi
 
-    # 复制到 MemexKit
+    # 复制到 MemexKit（开发模式）
     log_info "Copying to MemexKit..."
     mkdir -p "$MEMEX_KIT/Lib"
     cp "$BINARY" "$MEMEX_KIT/Lib/"
     chmod +x "$MEMEX_KIT/Lib/memex"
+
+    # 复制到 ~/.vimo/eterm/bin/（用户安装路径，确保新贡献者能找到）
+    local ETERM_BIN="$HOME/.vimo/eterm/bin"
+    log_info "Installing to $ETERM_BIN..."
+    mkdir -p "$ETERM_BIN"
+    cp "$BINARY" "$ETERM_BIN/"
+    chmod +x "$ETERM_BIN/memex"
 
     log_success "Memex built and deployed"
 }
