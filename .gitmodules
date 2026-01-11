@@ -13,3 +13,6 @@
 [submodule "memex"]
 	path = memex
 	url = git@github.com:vimo-ai/memex.git
+[submodule "website"]
+	path = website
+	url = git@github.com:vimo-ai/vimo-ai.github.io.git
