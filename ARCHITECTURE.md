@@ -446,39 +446,6 @@ ETerm/
 
 ---
 
-## 已解决的架构问题
-
-### ✅ 问题 1: 重复依赖 (已修复)
-
-**原问题**: memex-rs 同时依赖 `ai-cli-session-collector` 和 `claude-session-db`，导致重复依赖。
-
-**解决方案**: `claude-session-db` 作为统一入口，re-export 解析功能：
-
-```rust
-// claude-session-db/src/lib.rs
-pub use ai_cli_session_collector::{
-    ClaudeAdapter, CodexAdapter, ConversationAdapter,
-    IndexableMessage, IndexableSession, MessageType,
-    ParsedMessage, SessionMeta, Source,
-};
-```
-
-### ✅ 问题 2: Swift 双 FFI (已修复)
-
-**原问题**: VlaudeKit/MemexKit 同时依赖 `SessionReaderFFI` 和 `SharedDbFFI`。
-
-**解决方案**: 在 `claude-session-db` 的 FFI 层添加解析函数，Swift 插件只需依赖 `SharedDbFFI`：
-
-新增 FFI 函数:
-- `session_db_parse_jsonl` - 解析 JSONL 文件
-- `session_db_encode_path` / `session_db_decode_path` - 路径编解码
-- `session_db_list_file_projects` - 列出项目
-- `session_db_list_session_metas` - 列出会话元数据
-- `session_db_find_latest_session` - 查找最新会话
-- `session_db_read_session_messages` - 读取会话消息
-
----
-
 ## 开发指南
 
 详细开发流程请参考 [DEVELOPMENT.md](./DEVELOPMENT.md)
