@@ -10,11 +10,12 @@ members = [
     "claude-session-db",
     "memex/memex-rs",
 ]
-# vlaude-core 和 vlaude-daemon-rs 是独立项目，通过 patch 共享依赖
+# 独立项目，不加入 workspace
 exclude = [
     "vlaude/packages/vlaude-core",
     "vlaude/packages/vlaude-daemon-rs",
     "ETerm/rio",
+    "mcp-router/core",
 ]
 
 [workspace.package]
@@ -28,6 +29,9 @@ repository = "https://github.com/vimo-ai/ETerm"
 
 [patch."https://github.com/vimo-ai/ai-cli-session-collector"]
 ai-cli-session-collector = { path = "ai-cli-session-collector" }
+
+[patch."https://github.com/vimo-ai/ai-cli-session-db"]
+claude-session-db = { path = "claude-session-db" }
 
 # ============================================================================
 # Workspace 依赖 - 统一版本管理
