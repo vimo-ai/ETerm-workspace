@@ -16,3 +16,6 @@
 [submodule "website"]
 	path = website
 	url = git@github.com:vimo-ai/vimo-ai.github.io.git
+[submodule "mcp-router"]
+	path = mcp-router
+	url = git@github.com:vimo-ai/mcp-router.git
