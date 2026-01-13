@@ -9,7 +9,10 @@
 #   ./scripts/build.sh ffi       # 只编译 claude-session-db FFI
 #   ./scripts/build.sh socket    # 只编译 socket-client-ffi
 #   ./scripts/build.sh memex     # 只编译 memex
+#   ./scripts/build.sh sugarloaf # 只编译 sugarloaf-ffi
+#   ./scripts/build.sh mcp-router # 只编译 mcp-router-core
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
+#   ./scripts/build.sh check     # 只运行事件一致性检查
 # ============================================================================
 set -e
 
@@ -22,8 +25,12 @@ CLAUDE_SESSION_DB="$ETERM_ROOT/claude-session-db"
 MEMEX_RS="$ETERM_ROOT/memex/memex-rs"
 VLAUDE_CORE="$ETERM_ROOT/vlaude/packages/vlaude-core"
 ETERM_DIR="$ETERM_ROOT/ETerm"
+RIO_DIR="$ETERM_DIR/rio"
 VLAUDE_KIT="$ETERM_DIR/Plugins/VlaudeKit"
 MEMEX_KIT="$ETERM_DIR/Plugins/MemexKit"
+LSP_KIT="$ETERM_DIR/Plugins/LspKit"
+MCP_ROUTER="$ETERM_ROOT/mcp-router/core"
+MCP_ROUTER_KIT="$ETERM_DIR/Plugins/MCPRouterKit"
 
 # Colors
 GREEN='\033[0;32m'
@@ -108,6 +115,30 @@ EOF
 }
 
 # ============================================================================
+# 编译 sugarloaf-ffi
+# ============================================================================
+build_sugarloaf() {
+    log_info "Building sugarloaf-ffi..."
+
+    cd "$RIO_DIR"
+    cargo build --release -p sugarloaf-ffi
+
+    local STATIC_LIB="$RIO_DIR/target/release/libsugarloaf_ffi.a"
+
+    if [ ! -f "$STATIC_LIB" ]; then
+        log_error "sugarloaf-ffi static lib not found: $STATIC_LIB"
+        exit 1
+    fi
+
+    # 复制到 ETerm/Libs/Sugarloaf
+    log_info "Copying to ETerm/Libs/Sugarloaf..."
+    mkdir -p "$ETERM_DIR/ETerm/Libs/Sugarloaf"
+    cp "$STATIC_LIB" "$ETERM_DIR/ETerm/Libs/Sugarloaf/"
+
+    log_success "sugarloaf-ffi built and deployed"
+}
+
+# ============================================================================
 # 编译 memex binary
 # ============================================================================
 build_memex() {
@@ -142,6 +173,32 @@ build_memex() {
 }
 
 # ============================================================================
+# 编译 mcp-router-core
+# ============================================================================
+build_mcp_router() {
+    log_info "Building mcp-router-core..."
+
+    cd "$MCP_ROUTER"
+    cargo build --release
+
+    local DYLIB="$MCP_ROUTER/target/release/libmcp_router_core.dylib"
+    local HEADER="$MCP_ROUTER/include/mcp_router_core.h"
+
+    if [ ! -f "$DYLIB" ]; then
+        log_error "mcp-router-core dylib not found: $DYLIB"
+        exit 1
+    fi
+
+    # 复制到 MCPRouterKit
+    log_info "Copying to MCPRouterKit..."
+    mkdir -p "$MCP_ROUTER_KIT/Lib"
+    cp "$DYLIB" "$MCP_ROUTER_KIT/Lib/"
+    [ -f "$HEADER" ] && cp "$HEADER" "$MCP_ROUTER_KIT/Lib/"
+
+    log_success "mcp-router-core built and deployed"
+}
+
+# ============================================================================
 # 构建 Swift 插件
 # ============================================================================
 build_plugins() {
@@ -157,7 +214,29 @@ build_plugins() {
         cd "$MEMEX_KIT" && ./build.sh
     fi
 
+    if [ -f "$LSP_KIT/build.sh" ]; then
+        log_info "Building LspKit..."
+        cd "$LSP_KIT" && ./build.sh
+    fi
+
     log_success "Plugins built"
+}
+
+# ============================================================================
+# Vlaude 事件一致性检查
+# ============================================================================
+check_vlaude_events() {
+    log_info "Checking Vlaude event consistency..."
+
+    local CHECK_SCRIPT="$SCRIPT_DIR/check-vlaude-events.sh"
+    if [ -f "$CHECK_SCRIPT" ]; then
+        if ! "$CHECK_SCRIPT"; then
+            log_error "Event consistency check failed! Fix event definitions before building."
+            exit 1
+        fi
+    else
+        log_warn "Event check script not found: $CHECK_SCRIPT"
+    fi
 }
 
 # ============================================================================
@@ -170,6 +249,14 @@ main() {
     log_info "Root: $ETERM_ROOT"
     echo ""
 
+    # 构建前检查事件一致性（仅当涉及 VlaudeKit 或全量构建时）
+    case "$TARGET" in
+        socket|plugins|all)
+            check_vlaude_events
+            echo ""
+            ;;
+    esac
+
     case "$TARGET" in
         ffi)
             build_ffi
@@ -177,21 +264,32 @@ main() {
         socket)
             build_socket_ffi
             ;;
+        sugarloaf)
+            build_sugarloaf
+            ;;
         memex)
             build_memex
+            ;;
+        mcp-router)
+            build_mcp_router
             ;;
         plugins)
             build_plugins
             ;;
+        check)
+            check_vlaude_events
+            ;;
         all)
             build_ffi
             build_socket_ffi
+            build_sugarloaf
             build_memex
+            build_mcp_router
             build_plugins
             ;;
         *)
             log_error "Unknown target: $TARGET"
-            echo "Usage: $0 [ffi|socket|memex|plugins|all]"
+            echo "Usage: $0 [ffi|socket|sugarloaf|memex|mcp-router|plugins|check|all]"
             exit 1
             ;;
     esac
