@@ -258,49 +258,154 @@ ALTER TABLE messages ADD COLUMN approval_status TEXT;
   -- 值: pending, approved, rejected, timeout, NULL(无需审批)
 
 ALTER TABLE messages ADD COLUMN approval_resolved_at INTEGER;
-  -- 审批完成时间戳
+  -- 审批完成时间戳（毫秒）
 ```
 
-### 9.3 处理流程
+**实现状态**：✅ 已完成（Phase 1）
+- 使用迁移系统（version-based migrations）
+- ApprovalStatus 枚举：pending, approved, rejected, timeout
+- 部分索引优化查询性能
+
+### 9.3 UUID 映射关系（关键）
+
+Claude JSONL 中，tool_use 消息的结构：
+
+```json
+{
+  "uuid": "msg-abc123",          // 整个消息的 UUID
+  "type": "assistant",
+  "message": {
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "tool-xyz789",      // tool_use block 的 ID
+        "name": "Bash",
+        "input": {...}
+      }
+    ]
+  }
+}
+```
+
+**关键发现**：
+- `message.uuid` = 整个消息的 UUID（存储在 `messages.uuid`）
+- `tool_use.id` = tool_use block 的 ID（存储在 `messages.tool_call_id`）
+- Hook 传递的 `tool_use_id` = `tool_use.id`
+
+**解决方案**：
+- ai-cli-session-collector 提取 tool_use block 的 `id` 到 `tool_call_id` 字段
+- DB 提供 `update_approval_status_by_tool_call_id` 方法
+- VlaudeKit 使用 `tool_call_id` 而不是 `uuid` 更新审批状态
+
+### 9.4 处理流程（实际实现）
 
 ```
-Claude Code 触发权限请求
+1. Claude Code 触发权限请求
        │
-       ↓ Hook
-   VlaudeKit
+       ↓ Hook (permission_request)
+   ClaudeKit (ClaudeSocketServer)
        │
-       ├──→ 1. 写入 Daemon DB (approval_status = 'pending')
-       │         ↑ 本地操作，必成功
+       ↓ emit "claude.permissionPrompt"
+   VlaudeKit.handleClaudePermissionPrompt
        │
-       └──→ 2. 推送 Server（尽力而为）
-                  │
-                  ↓ (如果 Server 在线)
-              Server
-                  │
-                  ├──→ 写入 Server DB
-                  │
-                  └──→ 转发 iOS
+       ├──→ 存入 pendingApprovals 映射 (toolUseId → timestamp)
+       │
+       └──→ 推送给 iOS (尽力而为)
+
+2. SessionWatcher 扫描到 tool_use 消息
+       │
+       ↓ didReceiveMessages
+   VlaudeKit 检查 tool_call_id
+       │
+       ├──→ 如果在 pendingApprovals 中？
+       │      │
+       │      └──→ 立即标记为 pending
+       │           dbBridge.updateApprovalStatusByToolCallId(
+       │               toolCallId: toolCallId,
+       │               status: .pending,
+       │               resolvedAt: 0
+       │           )
+       │
+       └──→ 推送消息给 Server/iOS
+
+3. iOS 审批返回
+       │
+       ↓ permissionResponse (action: y/n/a)
+   VlaudeKit.didReceivePermissionResponse
+       │
+       ├──→ 解析 action → ApprovalStatus
+       │
+       ├──→ 写回 DB (通过 tool_call_id)
+       │    dbBridge.updateApprovalStatusByToolCallId(
+       │        toolCallId: toolUseId,
+       │        status: .approved/.rejected,
+       │        resolvedAt: now
+       │    )
+       │
+       └──→ 写入终端 (action + \r)
 ```
 
-**关键**：先写 DB，再推送。即使 Server 不在线，数据也已持久化。
+**关键设计**：
+- **先写 DB 再推送**：在 SessionWatcher 检测到消息后立即标记为 pending
+- **幂等性**：基于 tool_call_id 更新，重复调用不会产生副作用
+- **错误容忍**：DB 写入失败不影响终端操作
+- **返回更新计数**：检测更新是否成功（count > 0）
 
-### 9.4 iOS 获取 pending 权限请求
+### 9.5 iOS 获取 pending 权限请求
 
 ```
 iOS 打开 Session 详情
        │
-       ├──→ 拉取 Messages（包含 approval_status）
+       ├──→ 拉取 Messages（包含 approval_status, approval_resolved_at）
        │
-       └──→ 找出 approval_status = 'pending' 的消息
+       └──→ 过滤 approval_status = 'pending' 的消息
                   │
                   └──→ 显示审批按钮
 ```
 
-### 9.5 唯一丢失场景
+**实现状态**：⏳ 待实现（Phase 4）
+- Repository 层读取 approval_status 字段
+- UI 层根据状态显示审批按钮
 
-**写入 DB 之前 ETerm 崩溃**
+### 9.6 API 设计
 
-概率极低，本地写入几乎瞬时完成。
+**DB 层** (`claude-session-db/src/db.rs`)：
+```rust
+// 获取待审批消息
+pub fn get_pending_approvals(&self, session_id: &str) -> Result<Vec<Message>>
+
+// 通过 tool_call_id 更新审批状态（返回更新行数）
+pub fn update_approval_status_by_tool_call_id(
+    &self,
+    tool_call_id: &str,
+    status: ApprovalStatus,
+    resolved_at: i64,
+) -> Result<usize>
+
+// 统计待审批数量
+pub fn count_pending_approvals(&self, session_id: &str) -> Result<i64>
+```
+
+**Swift 层** (`VlaudeKit/SharedDbBridge.swift`)：
+```swift
+// 获取待审批消息
+func getPendingApprovals(sessionId: String) throws -> [SharedMessage]
+
+// 更新审批状态（返回更新行数）
+func updateApprovalStatusByToolCallId(
+    toolCallId: String,
+    status: ApprovalStatus,
+    resolvedAt: Int64
+) throws -> Int
+```
+
+### 9.7 唯一丢失场景
+
+**SessionWatcher 扫描之前 ETerm 崩溃**
+
+概率极低，因为：
+- Hook 触发和 JSONL 写入几乎同时完成
+- SessionWatcher 使用 FSEvents，延迟极低（< 100ms）
 
 ---
 
@@ -363,27 +468,135 @@ protocol SessionRepository {
 
 ---
 
-## 12. 下一步
+## 12. 实现进度
 
-### 12.1 DB 改动
+### 12.1 Phase 1: DB 改动 ✅
 
-- [ ] Daemon DB: messages 表增加 `approval_status`, `approval_resolved_at` 字段
-- [ ] Server DB: schema 与 Daemon DB 保持一致
-- [ ] 迁移脚本
+- [x] Daemon DB: messages 表增加 `approval_status`, `approval_resolved_at` 字段
+- [x] 迁移系统（version-based migrations）
+- [x] ApprovalStatus 枚举（pending, approved, rejected, timeout）
+- [x] 部分索引优化
+- [x] API: `get_pending_approvals`, `update_approval_status_by_tool_call_id`
+- [x] FFI 层扩展（MessageC, MessageInputC）
 
-### 12.2 VlaudeKit 改动
+### 12.2 Phase 2: VlaudeKit 改动 ✅
 
-- [ ] 权限请求时先写 DB 再推送
-- [ ] 审批结果更新 DB
+- [x] ai-cli-session-collector: 提取 tool_use block 的 id 到 tool_call_id
+- [x] SharedDbBridge: getPendingApprovals, updateApprovalStatusByToolCallId
+- [x] VlaudePlugin: 实现"先写 DB 再推送"原则
+- [x] pendingApprovals 映射机制
+- [x] SessionWatcher 集成（检测并标记 pending）
+- [x] 审批结果写回 DB（通过 tool_call_id）
 
-### 12.3 Server 改动
+### 12.3 Phase 3: Server 改动 ✅
 
-- [ ] 支持线上同步模式（写入 Server DB）
-- [ ] 支持纯转发模式（0 缓存）
-- [ ] iOS 拉取时并行读 DB + 请求 Daemon
+- [x] 支持线上同步模式（写入 Server DB）
+- [x] 支持纯转发模式（0 缓存）
+- [x] iOS 拉取时并行读 DB + 请求 Daemon
+- [x] 增量同步（Daemon → Server）
+- [x] 连接/断连状态处理
 
-### 12.4 iOS 改动
+**实现详情**：
 
-- [ ] Repository 层重构（推拉结合）
-- [ ] 从 Messages 数据中读取 approval_status
-- [ ] 处理"先旧后新"的增量合并
+1. **环境变量配置** (`DATA_SYNC_MODE`)：
+   - `forward`：纯转发模式（默认），所有请求穿透到 Daemon
+   - `sync`：线上同步模式，Server 缓存数据
+
+2. **Prisma Schema 扩展** (`prisma/schema.prisma`)：
+   - Message 表新增：`uuid`, `toolCallId`, `approvalStatus`, `approvalResolvedAt`
+   - 唯一约束：`@@unique([uuid])`（用于去重）
+   - 索引：`@@index([toolCallId])`, `@@index([approvalStatus])`
+
+3. **DataSyncModule** (`src/module/data-sync/`)：
+   - `DataSyncService`：封装模式切换逻辑
+   - `ensureProject/ensureSession`：upsert 保证存在
+   - `syncMessages/writeMessage`：基于 uuid 去重写入
+   - `updateApprovalStatusByToolCallId`：更新审批状态
+
+4. **SessionService 改动** (`src/module/session/session.service.ts`)：
+   - `getSessionMessages`：根据模式切换行为
+     - forward：直接透传 Daemon
+     - sync：并行读 DB + 请求 Daemon，后台同步增量
+
+5. **DaemonGateway 改动** (`src/module/daemon-gateway/daemon.gateway.ts`)：
+   - `handleNewMessage`：sync 模式下写入 Server DB 再转发
+
+6. **Codex 评估与修复**：
+   - ✅ 修复 sync 模式响应策略：改为"先读 DB 立即返回，后台刷新"
+   - ✅ 修复 `writeMessage` P2002 冲突处理：视为 benign
+   - ✅ 修复 `syncMessages` 计数逻辑：区分 inserted/updated/skipped
+   - ❌ 驳回 UUID 全局唯一性担忧：Claude UUID 本身是全局唯一的
+   - ❌ 驳回 toolCallId 全局唯一性担忧：同上
+
+7. **测试覆盖** (`src/test/unit/data-sync.spec.ts`)：
+   - 14 个测试用例，覆盖 forward/sync 两种模式
+
+### 12.4 Phase 4: iOS 改动 ✅
+
+- [x] Message.swift 扩展：新增 `toolCallId`, `approvalStatus`, `approvalResolvedAt` 字段
+- [x] MessageTransformer 改造：从 Messages 读取 approvalStatus 并设置 ToolExecution 状态
+- [x] SessionDetailViewModel 优化：applyPendingApprovals 同时处理缺少 requestId 的情况
+- [x] 显示待审批按钮（status = pending → .awaitingPermission）
+- [x] 保留 pendingApprovals 用于存储 requestId 和处理时序问题
+
+**实现详情**：
+
+1. **Message.swift 扩展**：
+   - 新增 `toolCallId: String?`：tool_use block 的 ID
+   - 新增 `approvalStatus: String?`：pending, approved, rejected, timeout
+   - 新增 `approvalResolvedAt: Int?`：审批完成时间戳（毫秒）
+   - CodingKeys 扩展支持 JSON 解码
+
+2. **MessageTransformer 改造** (`MessageTransformer.swift`)：
+   - 新增 `approvalCache: [String: ApprovalInfo]`：缓存 toolCallId → 审批状态映射
+   - `updateApprovalCache(from:)`：从 Messages 构建审批状态缓存
+   - `parseApprovalStatus(_:)`：将字符串状态转换为 ToolApprovalStatus 枚举
+   - `getApprovalStatus(for:)`：获取工具的审批状态
+   - 所有 ToolExecution 创建点都使用 approvalCache 设置初始状态
+
+3. **SessionDetailViewModel 优化** (`SessionDetailViewModel.swift`)：
+   - `applyPendingApprovals()` 增强：
+     - 原有逻辑：状态为 .none 时设置状态和 requestId
+     - 新增逻辑：状态为 .awaitingPermission 但缺少 requestId 时，只设置 requestId
+   - 保留 `pendingApprovals` 用于：
+     - 存储 requestId（发送审批响应时需要）
+     - 处理 WebSocket 推送先于 Messages API 返回的时序问题
+
+4. **状态映射**：
+   - Server `"pending"` → iOS `.awaitingPermission`
+   - Server `"approved"` → iOS `.completed`
+   - Server `"rejected"` → iOS `.rejected`
+   - Server `"timeout"` → iOS `.timeout`
+
+5. **数据流**：
+   ```
+   iOS 打开 Session 详情
+         │
+         ↓ 调用 API
+   Server 返回 Messages（包含 approvalStatus）
+         │
+         ↓
+   MessageTransformer.transform()
+         │
+         ├──→ updateApprovalCache() 构建状态缓存
+         │
+         └──→ 创建 ToolExecution 时应用状态
+                  │
+                  ↓
+   UI 根据 ToolExecution.approvalStatus 显示按钮
+   ```
+
+6. **实时更新流程**：
+   ```
+   WebSocket 推送 ApprovalRequest
+         │
+         ↓
+   存储到 pendingApprovals（包含 requestId）
+         │
+         ↓
+   applyPendingApprovals()
+         │
+         ├──→ 状态为 .none：设置状态 + requestId
+         │
+         └──→ 状态为 .awaitingPermission 缺少 requestId：只设置 requestId
+   ```
