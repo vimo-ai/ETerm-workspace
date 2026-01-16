@@ -308,7 +308,7 @@ ETerm/
 
 **Writer 协调机制**:
 
-4 个组件共享 `~/.vimo/db/claude-session.db`：
+4 个组件共享 `~/.vimo/db/ai-cli-session.db`：
 
 | 组件 | WriterType | 优先级 | 触发方式 | 覆盖范围 |
 |------|------------|--------|----------|----------|
