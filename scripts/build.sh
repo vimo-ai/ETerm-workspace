@@ -14,6 +14,7 @@
 #   ./scripts/build.sh sugarloaf # 只编译 sugarloaf-ffi
 #   ./scripts/build.sh mcp-router # 只编译 mcp-router-core
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
+#   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
 # ============================================================================
 set -e
@@ -319,6 +320,35 @@ build_plugins() {
 }
 
 # ============================================================================
+# Clippy 检查
+# ============================================================================
+lint_rust() {
+    log_info "Running clippy on all Rust projects..."
+
+    # 主 Workspace（ai-cli-session-collector, claude-session-db, memex-rs 等）
+    log_info "Checking main workspace..."
+    cd "$ETERM_ROOT"
+    cargo clippy --workspace -- -D warnings
+
+    # 独立 workspace: vlaude-core
+    log_info "Checking vlaude-core..."
+    cd "$VLAUDE_CORE"
+    cargo clippy --workspace -- -D warnings
+
+    # 独立 workspace: mcp-router
+    log_info "Checking mcp-router..."
+    cd "$MCP_ROUTER"
+    cargo clippy -- -D warnings
+
+    # 独立 workspace: rio (sugarloaf)
+    log_info "Checking rio/sugarloaf..."
+    cd "$RIO_DIR"
+    cargo clippy --workspace -- -D warnings
+
+    log_success "Clippy passed for all projects"
+}
+
+# ============================================================================
 # Vlaude 事件一致性检查
 # ============================================================================
 check_vlaude_events() {
@@ -379,6 +409,9 @@ main() {
             build_etermkit  # 插件依赖 ETermKit，先确保它已构建
             build_plugins
             ;;
+        lint)
+            lint_rust
+            ;;
         check)
             check_vlaude_events
             ;;
@@ -394,7 +427,7 @@ main() {
             ;;
         *)
             log_error "Unknown target: $TARGET"
-            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|plugins|check|all]"
+            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|plugins|lint|check|all]"
             exit 1
             ;;
     esac
