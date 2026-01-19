@@ -76,6 +76,7 @@ build_etermkit() {
     rm -rf "$BUILD_OUTPUT/ETermKit.swiftmodule"
 
     mkdir -p "$ETERMKIT_FRAMEWORK/Versions/A/Resources"
+    mkdir -p "$ETERMKIT_FRAMEWORK/Versions/A/Modules/ETermKit.swiftmodule"
     mkdir -p "$BUILD_OUTPUT/ETermKit.swiftmodule"
 
     # 复制 dylib
@@ -83,17 +84,29 @@ build_etermkit() {
 
     # 获取当前架构
     local ARCH=$(uname -m)
-    local TRIPLE="${ARCH}-apple-macos"
+    local TRIPLE="${ARCH}-apple-macosx"
 
-    # 复制 swiftmodule 到 framework 外面（Xcode 风格）
-    cp "$BUILD_DIR/Modules/ETermKit.swiftmodule" "$BUILD_OUTPUT/ETermKit.swiftmodule/${TRIPLE}.swiftmodule"
-    cp "$BUILD_DIR/Modules/ETermKit.swiftdoc" "$BUILD_OUTPUT/ETermKit.swiftmodule/${TRIPLE}.swiftdoc"
-    cp "$BUILD_DIR/Modules/ETermKit.abi.json" "$BUILD_OUTPUT/ETermKit.swiftmodule/${TRIPLE}.abi.json"
+    # 复制 swiftmodule 到 framework 内部（Swift PM 需要）
+    # 同时提供 macosx 和 macos 两种命名（不同工具链可能使用不同的 triple）
+    local TRIPLE_X="${ARCH}-apple-macosx"
+    local TRIPLE_NO_X="${ARCH}-apple-macos"
 
-    # 复制 swiftsourceinfo（如果存在）
-    if [ -f "$BUILD_DIR/Modules/ETermKit.swiftsourceinfo" ]; then
-        cp "$BUILD_DIR/Modules/ETermKit.swiftsourceinfo" "$BUILD_OUTPUT/ETermKit.swiftmodule/${TRIPLE}.swiftsourceinfo"
-    fi
+    for triple in "$TRIPLE_X" "$TRIPLE_NO_X"; do
+        cp "$BUILD_DIR/Modules/ETermKit.swiftmodule" "$ETERMKIT_FRAMEWORK/Versions/A/Modules/ETermKit.swiftmodule/${triple}.swiftmodule"
+        cp "$BUILD_DIR/Modules/ETermKit.swiftdoc" "$ETERMKIT_FRAMEWORK/Versions/A/Modules/ETermKit.swiftmodule/${triple}.swiftdoc"
+        cp "$BUILD_DIR/Modules/ETermKit.abi.json" "$ETERMKIT_FRAMEWORK/Versions/A/Modules/ETermKit.swiftmodule/${triple}.abi.json"
+        if [ -f "$BUILD_DIR/Modules/ETermKit.swiftsourceinfo" ]; then
+            cp "$BUILD_DIR/Modules/ETermKit.swiftsourceinfo" "$ETERMKIT_FRAMEWORK/Versions/A/Modules/ETermKit.swiftmodule/${triple}.swiftsourceinfo"
+        fi
+
+        # 同时复制到 framework 外面（兼容旧方式）
+        cp "$BUILD_DIR/Modules/ETermKit.swiftmodule" "$BUILD_OUTPUT/ETermKit.swiftmodule/${triple}.swiftmodule"
+        cp "$BUILD_DIR/Modules/ETermKit.swiftdoc" "$BUILD_OUTPUT/ETermKit.swiftmodule/${triple}.swiftdoc"
+        cp "$BUILD_DIR/Modules/ETermKit.abi.json" "$BUILD_OUTPUT/ETermKit.swiftmodule/${triple}.abi.json"
+        if [ -f "$BUILD_DIR/Modules/ETermKit.swiftsourceinfo" ]; then
+            cp "$BUILD_DIR/Modules/ETermKit.swiftsourceinfo" "$BUILD_OUTPUT/ETermKit.swiftmodule/${triple}.swiftsourceinfo"
+        fi
+    done
 
     # 创建 Info.plist
     cat > "$ETERMKIT_FRAMEWORK/Versions/A/Resources/Info.plist" << 'EOF'
@@ -120,6 +133,7 @@ EOF
     cd "$ETERMKIT_FRAMEWORK"
     ln -sfh Versions/Current/ETermKit ETermKit
     ln -sfh Versions/Current/Resources Resources
+    ln -sfh Versions/Current/Modules Modules
 
     # 签名整个 framework
     codesign -f -s - "$ETERMKIT_FRAMEWORK"
