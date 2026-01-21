@@ -19,3 +19,6 @@
 [submodule "mcp-router"]
 	path = mcp-router
 	url = git@github.com:vimo-ai/mcp-router.git
+[submodule "vimo-rust"]
+	path = vimo-rust
+	url = git@github.com:vimo-ai/vimo-rust.git
