@@ -1,7 +1,7 @@
 # ai-cli-session-db Agent 架构设计
 
 > 创建时间: 2026-01-23
-> 状态: 实现中（Phase 3 进行中 - 移除旧协调机制）
+> 状态: ✅ 已完成（Phase 5 - Agent 架构迁移完成）
 
 ## 1. 背景与问题
 
@@ -573,13 +573,13 @@ client = []  # Agent Client，供组件使用
 2. 组件改造
    ├── memex-rs ✅ 使用 AgentClient，订阅事件，移除 FileWatcher
    ├── vlaude-core (daemon-logic) ✅ 使用 AgentClient，编译通过
-   ├── VlaudeKit ✅ Swift 层 AgentClientBridge 已实现
-   └── MemexKit ✅ Swift 层 AgentClientBridge 已实现
+   ├── VlaudeKit ✅ Swift 层 AgentClientBridge + SharedDbBridge 只读
+   └── MemexKit ✅ Swift 层 AgentClientBridge + SharedDbBridge 只读
 
-3. 移除旧的 Writer 协调机制 ⏳
-   ├── SharedDbBridge 仍使用 register_writer（需移除）
-   ├── coordination.rs 废弃（feature flag 保护，暂时保留）
-   └── writer_registry 表废弃
+3. 移除旧的 Writer 协调机制 ✅
+   ├── SharedDbBridge ✅ 已移除 register_writer/release_writer/collect
+   ├── Rust 层 ✅ 无 coordination feature flag（从未实现）
+   └── writer_registry 表 ✅ 已清理
 
 4. 构建与部署 ✅
    ├── build.sh 添加 agent 构建目标
@@ -644,14 +644,42 @@ client = []  # Agent Client，供组件使用
 - `ETerm/Plugins/MemexKit/Sources/MemexKit/AgentClientBridge.swift` - MemexKit Agent Client
 - `scripts/build.sh` - 添加 `agent` 构建目标
 
-待完成（Phase 4）：
-- 移除 SharedDbBridge 中的 `register_writer`/`release_writer` 调用
-- SharedDbBridge 改为纯读取（Reader-only），写入走 AgentClient
-- 废弃 `coordination` feature flag
-- 清理 `writer_registry` 表相关代码
+### Phase 4: Swift 层只读改造（2026-01-24）
 
-**⚠️ 当前风险：Agent 和 SharedDbBridge 可能同时写入 DB**
-- Agent 不使用 writer_registry（直接写）
-- SharedDbBridge 使用 writer_registry（旧协调）
-- 两者都可能获得写入权限 = 潜在冲突
-- 需要在 Phase 4 中移除 SharedDbBridge 的写入能力
+**MemexKit 修改：**
+- `SharedDbBridge.swift` - 移除 Writer 协调、写入、采集方法（889 → 472 行）
+- `MemexService.swift` - 移除 `registerAndCollect()`，`collectByPath()` 改用 AgentClient
+
+**VlaudeKit 修改：**
+- `SharedDbBridge.swift` - 移除 Writer 协调、写入、采集方法（801 → 414 行）
+  - 保留 `updateApprovalStatusByToolCallId()`（AgentClient FFI 暂未实现）
+- `VlaudeClient.swift` - 移除 `initSharedDb()` 中的 `registerAndCollect()`，删除 `indexSession()`
+- `VlaudePlugin.swift` - 移除 `register()` 调用，`indexSession` 改用 `agentClient.notifyFileChange()`
+
+**架构状态：**
+- Swift 层 SharedDbBridge 现在是纯只读（查询 + approval 更新）
+- 所有数据采集和写入通过 AgentClient → vimo-agent
+- 风险已消除：不再存在双写冲突
+
+**Phase 4.1: AgentClient writeApproveResult 实现（2026-01-24）**
+
+Rust 层：
+- `protocol.rs` - ApprovalStatus 添加 Pending 状态
+- `client/connect.rs` - AgentClient 添加 `write_approve_result` 方法
+- `client/ffi.rs` - 导出 `agent_client_write_approve_result` FFI 函数
+- `agent/handler.rs` - 处理 Pending 状态转换
+
+Swift 层：
+- `AgentClientBridge.swift` - 添加 `AgentApprovalStatusSwift` 枚举和 `writeApproveResult` 方法
+- `VlaudePlugin.swift` - 两处调用改为使用 AgentClient
+- `SharedDbBridge.swift` - 移除 ApprovalStatus 枚举和 updateApprovalStatusByToolCallId 方法（414 → 353 行）
+
+**Phase 5: 清理验证（2026-01-25）**
+
+验证结果：
+- `coordination` feature flag - 从未作为 feature 存在，仅文档描述
+- `writer_registry` 表代码 - 已在早期清理
+- `session_db_update_approval_status_by_tool_call_id` FFI - 已移除
+- Cargo.toml description - 已更新为 Agent 架构描述
+
+✅ **Agent 架构迁移完成**

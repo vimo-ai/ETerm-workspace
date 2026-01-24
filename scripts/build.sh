@@ -279,7 +279,8 @@ build_agent() {
     cd "$CLAUDE_SESSION_DB"
     cargo build --release --bin vimo-agent --features agent
 
-    local BINARY="$CLAUDE_SESSION_DB/target/release/vimo-agent"
+    # 工作空间编译输出到根目录的 target（不是子包的 target）
+    local BINARY="$ETERM_ROOT/target/release/vimo-agent"
 
     if [ ! -f "$BINARY" ]; then
         log_error "vimo-agent binary not found: $BINARY"
