@@ -9,7 +9,7 @@ ETerm 工具生态系统的 Cargo Workspace 主仓库，用于协调和管理所
 ```
 ETerm-workspace/
 ├── ai-cli-session-collector/   # JSONL 解析器
-├── claude-session-db/          # 数据库层 + FFI
+├── ai-cli-session-db/          # 数据库层 + FFI
 ├── claude/                     # Vlaude 服务 (daemon + server)
 ├── english/                    # ETerm.app (Swift/macOS)
 └── memex/                      # Memex 后端
@@ -51,7 +51,7 @@ git submodule update --remote
 | 子项目 | 仓库 | 说明 |
 |--------|------|------|
 | ai-cli-session-collector | [vimo-ai/AI-cli-session-collector](https://github.com/vimo-ai/AI-cli-session-collector) | JSONL 解析 |
-| claude-session-db | [vimo-ai/ai-cli-session-db](https://github.com/vimo-ai/ai-cli-session-db) | 数据库 + FFI |
+| ai-cli-session-db | [vimo-ai/ai-cli-session-db](https://github.com/vimo-ai/ai-cli-session-db) | 数据库 + FFI |
 | claude | [vimo-ai/vlaude](https://github.com/vimo-ai/vlaude) | Vlaude 服务 |
 | english | [vimo-ai/ETerm](https://github.com/vimo-ai/ETerm) | macOS 应用 |
 | memex | [vimo-ai/memex](https://github.com/vimo-ai/memex) | Memex 后端 |
