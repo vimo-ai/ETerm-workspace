@@ -7,7 +7,7 @@
 # 使用方式:
 #   ./scripts/build.sh           # 编译所有
 #   ./scripts/build.sh etermkit  # 只编译 ETermKit SDK
-#   ./scripts/build.sh ffi       # 只编译 claude-session-db FFI
+#   ./scripts/build.sh ffi       # 只编译 ai-cli-session-db FFI
 #   ./scripts/build.sh socket    # 只编译 socket-client-ffi
 #   ./scripts/build.sh vlaude-ffi # 只编译 vlaude-ffi (数据查询 API)
 #   ./scripts/build.sh memex     # 只编译 memex
@@ -26,7 +26,7 @@ ETERM_ROOT="$(dirname "$SCRIPT_DIR")"
 # 目录定义
 ETERMKIT_PKG="$ETERM_ROOT/ETerm/Packages/ETermKit"
 ETERMKIT_FRAMEWORK="$ETERM_ROOT/ETerm/Build/ETermKit.framework"
-CLAUDE_SESSION_DB="$ETERM_ROOT/claude-session-db"
+CLAUDE_SESSION_DB="$ETERM_ROOT/ai-cli-session-db"
 MEMEX_RS="$ETERM_ROOT/memex/memex-rs"
 MEMEX_WEB_SRC="$ETERM_ROOT/memex/web"
 MEMEX_WEB_DEST="$HOME/.vimo/memex/web"
@@ -143,15 +143,15 @@ EOF
 }
 
 # ============================================================================
-# 编译 claude-session-db FFI
+# 编译 ai-cli-session-db FFI
 # ============================================================================
 build_ffi() {
-    log_info "Building claude-session-db FFI..."
+    log_info "Building ai-cli-session-db FFI..."
 
     if [ -f "$CLAUDE_SESSION_DB/build.sh" ]; then
         cd "$CLAUDE_SESSION_DB" && ./build.sh
     else
-        log_error "claude-session-db/build.sh not found"
+        log_error "ai-cli-session-db/build.sh not found"
         exit 1
     fi
 
@@ -325,7 +325,7 @@ build_plugins() {
 lint_rust() {
     log_info "Running clippy on all Rust projects..."
 
-    # 主 Workspace（ai-cli-session-collector, claude-session-db, memex-rs 等）
+    # 主 Workspace（ai-cli-session-collector, ai-cli-session-db, memex-rs 等）
     log_info "Checking main workspace..."
     cd "$ETERM_ROOT"
     cargo clippy --workspace -- -D warnings

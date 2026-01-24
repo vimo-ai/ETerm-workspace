@@ -9,7 +9,7 @@ Cargo Workspace for the ETerm ecosystem. Coordinates and manages all subprojects
 ```
 ETerm-workspace/
 ├── ai-cli-session-collector/   # JSONL parser
-├── claude-session-db/          # Database + FFI
+├── ai-cli-session-db/          # Database + FFI
 ├── claude/                     # Vlaude services (daemon + server)
 ├── english/                    # ETerm.app (Swift/macOS)
 └── memex/                      # Memex backend
@@ -51,7 +51,7 @@ git submodule update --remote
 | Subproject | Repository | Description |
 |------------|------------|-------------|
 | ai-cli-session-collector | [vimo-ai/AI-cli-session-collector](https://github.com/vimo-ai/AI-cli-session-collector) | JSONL parsing |
-| claude-session-db | [vimo-ai/ai-cli-session-db](https://github.com/vimo-ai/ai-cli-session-db) | Database + FFI |
+| ai-cli-session-db | [vimo-ai/ai-cli-session-db](https://github.com/vimo-ai/ai-cli-session-db) | Database + FFI |
 | claude | [vimo-ai/vlaude](https://github.com/vimo-ai/vlaude) | Vlaude services |
 | english | [vimo-ai/ETerm](https://github.com/vimo-ai/ETerm) | macOS app |
 | memex | [vimo-ai/memex](https://github.com/vimo-ai/memex) | Memex backend |

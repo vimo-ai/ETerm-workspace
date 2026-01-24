@@ -7,7 +7,7 @@
 resolver = "2"
 members = [
     "ai-cli-session-collector",
-    "claude-session-db",
+    "ai-cli-session-db",
     "memex/memex-rs",
 ]
 # 独立项目，不加入 workspace
@@ -31,7 +31,7 @@ repository = "https://github.com/vimo-ai/ETerm"
 ai-cli-session-collector = { path = "ai-cli-session-collector" }
 
 [patch."https://github.com/vimo-ai/ai-cli-session-db"]
-claude-session-db = { path = "claude-session-db" }
+ai-cli-session-db = { path = "ai-cli-session-db" }
 
 # ============================================================================
 # Workspace 依赖 - 统一版本管理
@@ -40,7 +40,7 @@ claude-session-db = { path = "claude-session-db" }
 [workspace.dependencies]
 # 内部 crates
 ai-cli-session-collector = { git = "https://github.com/vimo-ai/ai-cli-session-collector" }
-claude-session-db = { path = "claude-session-db" }
+ai-cli-session-db = { path = "ai-cli-session-db" }
 
 # 异步
 tokio = { version = "1", features = ["full"] }

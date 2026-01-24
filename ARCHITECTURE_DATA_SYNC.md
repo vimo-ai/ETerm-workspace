@@ -369,7 +369,7 @@ iOS 打开 Session 详情
 
 ### 9.6 API 设计
 
-**DB 层** (`claude-session-db/src/db.rs`)：
+**DB 层** (`ai-cli-session-db/src/db.rs`)：
 ```rust
 // 获取待审批消息
 pub fn get_pending_approvals(&self, session_id: &str) -> Result<Vec<Message>>

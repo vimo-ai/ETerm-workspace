@@ -20,7 +20,7 @@ ETerm/                              # 主仓库 (Cargo workspace)
 ├── scripts/build.sh                # 统一编译入口
 │
 ├── ai-cli-session-collector/       # submodule: JSONL 解析器
-├── claude-session-db/              # submodule: 数据库 + FFI
+├── ai-cli-session-db/              # submodule: 数据库 + FFI
 ├── memex/memex-rs/                 # submodule: Memex 后端
 ├── claude/packages/
 │   ├── vlaude-core/                # 独立 workspace: Rust daemon
@@ -28,8 +28,8 @@ ETerm/                              # 主仓库 (Cargo workspace)
 │
 └── english/                        # ETerm 主项目 (Swift)
     └── Plugins/
-        ├── VlaudeKit/              # 使用 claude-session-db FFI
-        └── MemexKit/               # 使用 claude-session-db FFI
+        ├── VlaudeKit/              # 使用 ai-cli-session-db FFI
+        └── MemexKit/               # 使用 ai-cli-session-db FFI
 ```
 
 ### 依赖策略
@@ -56,7 +56,7 @@ graph TD
 
     subgraph Rust["Rust 层"]
         collector["ai-cli-session-collector"]
-        sessiondb["claude-session-db"]
+        sessiondb["ai-cli-session-db"]
         memex["memex-rs"]
         vlaudecore["vlaude-core"]
     end
@@ -103,12 +103,12 @@ flowchart TB
     end
 
     subgraph FFI["Rust FFI Layer"]
-        F1["libclaude_session_db.dylib"]
+        F1["libai_cli_session_db.dylib"]
     end
 
     subgraph Crates["Rust Crates"]
         R1["ai-cli-session-collector"]
-        R2["claude-session-db"]
+        R2["ai-cli-session-db"]
         R3["memex-rs"]
         R4["vlaude-core"]
     end
@@ -157,14 +157,14 @@ flowchart TB
 
 ### Rust 依赖关系
 
-`claude-session-db` 作为统一入口，re-export `ai-cli-session-collector` 的类型。
+`ai-cli-session-db` 作为统一入口，re-export `ai-cli-session-collector` 的类型。
 
 ```mermaid
 flowchart LR
     subgraph Crates["Rust Crates"]
         direction TB
         A["ai-cli-session-collector"]
-        B["claude-session-db"]
+        B["ai-cli-session-db"]
         C["memex-rs"]
         A --> B
         B --> C
@@ -192,7 +192,7 @@ flowchart LR
     end
 
     subgraph Storage["💾 存储层"]
-        DB["claude-session-db"]
+        DB["ai-cli-session-db"]
         SQLite[("SQLite + FTS5")]
         Lance[("LanceDB")]
     end
@@ -247,7 +247,7 @@ ETerm/
 │   ├── memex-rs/               # Rust 后端
 │   └── ...                     # NestJS 旧版本 (待迁移)
 │
-├── claude-session-db/          # 共享数据库层 (Rust)
+├── ai-cli-session-db/          # 共享数据库层 (Rust)
 │
 └── ai-cli-session-collector/   # JSONL 解析器 (Rust)
 ```
@@ -281,7 +281,7 @@ ETerm/
 
 ---
 
-### 2. claude-session-db
+### 2. ai-cli-session-db
 
 **职责**: 统一的数据访问层，为所有组件提供会话解析、存储和搜索
 
@@ -289,7 +289,7 @@ ETerm/
 |------|-----|
 | 语言 | Rust |
 | 类型 | Library + FFI |
-| 位置 | `/claude-session-db` |
+| 位置 | `/ai-cli-session-db` |
 | 依赖 | ai-cli-session-collector |
 
 **核心功能**:
@@ -345,7 +345,7 @@ ETerm/
 | 7 | ✅ | ✅ | ✅ | 插件 | daemon 们都降级为 Reader |
 
 **产出**:
-- `libclaude_session_db.dylib` - Swift FFI 调用（包含解析和数据库功能）
+- `libai_cli_session_db.dylib` - Swift FFI 调用（包含解析和数据库功能）
 
 ---
 
@@ -358,7 +358,7 @@ ETerm/
 | 语言 | Rust |
 | 类型 | Binary + Library |
 | 位置 | `/memex/memex-rs` |
-| 依赖 | claude-session-db |
+| 依赖 | ai-cli-session-db |
 
 **功能**:
 - HTTP API 服务 (`:10013`)
@@ -441,7 +441,7 @@ ETerm/
 | `vlaude-server` | TypeScript | 云端服务，转发消息 |
 
 **技术栈**:
-- vlaude-core: Rust + tokio + claude-session-db
+- vlaude-core: Rust + tokio + ai-cli-session-db
 - vlaude-server: NestJS + Socket.IO + Prisma
 
 ---
@@ -465,7 +465,7 @@ ETerm/
 | 修改的项目 | 运行命令 |
 |-----------|---------|
 | ai-cli-session-collector | `cd ai-cli-session-collector && ./scripts/update_downstream.sh` |
-| claude-session-db | `cd claude-session-db && ./scripts/update_downstream.sh` |
+| ai-cli-session-db | `cd ai-cli-session-db && ./scripts/update_downstream.sh` |
 | memex-rs | `cd memex/memex-rs && ./scripts/update_eterm.sh` |
 
 ### 插件开发

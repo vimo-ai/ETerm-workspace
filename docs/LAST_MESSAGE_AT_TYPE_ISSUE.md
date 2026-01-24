@@ -32,7 +32,7 @@ MCP error -32603: Invalid column type Real at index: 5, name: last_message_at
 
 ## 临时修复
 
-在 `claude-session-db/src/db.rs` 的 `list_projects_with_stats` 函数中，使用 `CAST` 强制转换：
+在 `ai-cli-session-db/src/db.rs` 的 `list_projects_with_stats` 函数中，使用 `CAST` 强制转换：
 
 ```sql
 CAST(MAX(s.last_message_at) AS INTEGER) as last_active
@@ -62,7 +62,7 @@ UPDATE sessions SET last_message_at = (
 
 ## 相关文件
 
-- `claude-session-db/src/db.rs` - 数据库查询
+- `ai-cli-session-db/src/db.rs` - 数据库查询
 - `memex/memex-rs/src/collector/mod.rs` - 数据采集
 - `ai-cli-session-collector/src/adapter/claude.rs` - JSONL 解析
 

@@ -83,7 +83,7 @@ async requestSessionBySessionId(sessionId: string, projectPath: string) {
 
 **现象**: Daemon 的 `list_projects` 直接扫描 `~/.claude/projects/` 目录
 ```rust
-// claude-session-db/src/reader.rs:116
+// ai-cli-session-db/src/reader.rs:116
 let entries = match fs::read_dir(&self.projects_path)
 ```
 
@@ -278,6 +278,6 @@ iOS 请求 session messages
 - Daemon: `vlaude-core/daemon-logic/src/shared_db.rs`
 - Daemon: `vlaude-core/daemon-logic/src/sync_api.rs` (新增)
 - FFI: `vlaude-core/vlaude-ffi/src/lib.rs`
-- DB: `claude-session-db/src/db.rs`
-- DB: `claude-session-db/src/types.rs`
+- DB: `ai-cli-session-db/src/db.rs`
+- DB: `ai-cli-session-db/src/types.rs`
 - iOS: `Vlaude/ViewModels/SessionDetailViewModel.swift`

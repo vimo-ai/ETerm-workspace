@@ -10,14 +10,14 @@ ETerm/                              # 主仓库 (workspace)
 ├── scripts/build.sh                # 统一编译入口
 │
 ├── ai-cli-session-collector/       # submodule: JSONL 解析器
-├── claude-session-db/              # submodule: 数据库 + FTS + FFI
+├── ai-cli-session-db/              # submodule: 数据库 + FTS + FFI
 ├── memex/memex-rs/                 # submodule: Memex 后端
 ├── claude/packages/vlaude-core/    # 独立 workspace: daemon 相关
 │
 └── english/                        # ETerm 主项目 (Swift)
     └── Plugins/
-        ├── VlaudeKit/              # 使用 claude-session-db FFI
-        └── MemexKit/               # 使用 claude-session-db FFI + memex binary
+        ├── VlaudeKit/              # 使用 ai-cli-session-db FFI
+        └── MemexKit/               # 使用 ai-cli-session-db FFI + memex binary
 ```
 
 ## 依赖关系
@@ -26,7 +26,7 @@ ETerm/                              # 主仓库 (workspace)
 ai-cli-session-collector (JSONL 解析)
         │
         ↓ git 依赖
-claude-session-db (数据库 + FTS + Writer 协调 + FFI)
+ai-cli-session-db (数据库 + FTS + Writer 协调 + FFI)
         │
         ├──────────────────┬──────────────────┐
         ↓                  ↓                  ↓
@@ -64,7 +64,7 @@ cd ETerm
 ./scripts/build.sh
 
 # 或分别编译
-./scripts/build.sh ffi      # 只编译 claude-session-db FFI
+./scripts/build.sh ffi      # 只编译 ai-cli-session-db FFI
 ./scripts/build.sh memex    # 只编译 memex binary
 ./scripts/build.sh plugins  # 只构建 Swift 插件
 ```
@@ -74,7 +74,7 @@ cd ETerm
 | 修改的项目 | 运行命令 |
 |-----------|---------|
 | ai-cli-session-collector | `cd ai-cli-session-collector && ./scripts/update_downstream.sh` |
-| claude-session-db | `cd claude-session-db && ./scripts/update_downstream.sh` |
+| ai-cli-session-db | `cd ai-cli-session-db && ./scripts/update_downstream.sh` |
 | memex-rs | `cd memex/memex-rs && ./scripts/update_eterm.sh` |
 | vlaude-core | `cargo build` (在 vlaude-core 目录) |
 
@@ -90,7 +90,7 @@ cd english/Plugins/MemexKit && ./build.sh
 | 目录 | 说明 | 独立仓库 |
 |------|------|---------|
 | ai-cli-session-collector | Claude/Codex JSONL 解析器 | ✅ |
-| claude-session-db | SQLite 数据库 + FTS5 + Writer 协调 | ✅ |
+| ai-cli-session-db | SQLite 数据库 + FTS5 + Writer 协调 | ✅ |
 | memex/memex-rs | Memex 后端 (HTTP + 向量搜索) | ✅ |
 | claude/packages/vlaude-core | Vlaude daemon 核心 | ✅ |
 | english | ETerm 主项目 (Swift/macOS) | - |
@@ -109,7 +109,7 @@ cd english/Plugins/MemexKit && ./build.sh
 1. **不要硬编码路径**：所有脚本使用相对路径推断
 2. **谁修改谁更新**：修改后运行对应的 `update_downstream.sh`
 3. **子项目独立性**：子项目使用 git 依赖，可独立 clone 编译
-4. **FFI 同步**：修改 claude-session-db 后需要重新复制 dylib 到插件目录
+4. **FFI 同步**：修改 ai-cli-session-db 后需要重新复制 dylib 到插件目录
 
 ## 常见问题
 
@@ -126,13 +126,13 @@ cargo build
 检查 FFI dylib 是否已复制到插件目录：
 ```bash
 ls english/Plugins/VlaudeKit/Libs/SharedDB/
-# 应该有 libclaude_session_db.dylib
+# 应该有 libai_cli_session_db.dylib
 ```
 
 ### Q: 独立编译子项目？
 
 子项目可以独立编译（使用 git 依赖）：
 ```bash
-cd claude-session-db
+cd ai-cli-session-db
 cargo build  # 会从 git 拉取 ai-cli-session-collector
 ```
