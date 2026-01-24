@@ -13,6 +13,7 @@
 #   ./scripts/build.sh memex     # 只编译 memex
 #   ./scripts/build.sh sugarloaf # 只编译 sugarloaf-ffi
 #   ./scripts/build.sh mcp-router # 只编译 mcp-router-core
+#   ./scripts/build.sh agent     # 只编译 vimo-agent
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
 #   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
@@ -270,6 +271,31 @@ build_memex() {
 }
 
 # ============================================================================
+# 编译 vimo-agent
+# ============================================================================
+build_agent() {
+    log_info "Building vimo-agent..."
+
+    cd "$CLAUDE_SESSION_DB"
+    cargo build --release --bin vimo-agent --features agent
+
+    local BINARY="$CLAUDE_SESSION_DB/target/release/vimo-agent"
+
+    if [ ! -f "$BINARY" ]; then
+        log_error "vimo-agent binary not found: $BINARY"
+        exit 1
+    fi
+
+    # 部署到 ~/.vimo/bin/
+    local DEPLOY_DIR="$HOME/.vimo/bin"
+    mkdir -p "$DEPLOY_DIR"
+    cp "$BINARY" "$DEPLOY_DIR/"
+    chmod +x "$DEPLOY_DIR/vimo-agent"
+
+    log_success "vimo-agent built and deployed to $DEPLOY_DIR"
+}
+
+# ============================================================================
 # 编译 mcp-router-core
 # ============================================================================
 build_mcp_router() {
@@ -405,6 +431,9 @@ main() {
         mcp-router)
             build_mcp_router
             ;;
+        agent)
+            build_agent
+            ;;
         plugins)
             build_etermkit  # 插件依赖 ETermKit，先确保它已构建
             build_plugins
@@ -423,11 +452,12 @@ main() {
             build_sugarloaf
             build_memex
             build_mcp_router
+            build_agent
             build_plugins
             ;;
         *)
             log_error "Unknown target: $TARGET"
-            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|plugins|lint|check|all]"
+            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|agent|plugins|lint|check|all]"
             exit 1
             ;;
     esac

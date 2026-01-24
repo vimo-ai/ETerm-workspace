@@ -1,7 +1,7 @@
 # ai-cli-session-db Agent 架构设计
 
 > 创建时间: 2026-01-23
-> 状态: 实现中（Phase 2 完成）
+> 状态: 实现中（Phase 3 进行中 - 移除旧协调机制）
 
 ## 1. 背景与问题
 
@@ -573,15 +573,17 @@ client = []  # Agent Client，供组件使用
 2. 组件改造
    ├── memex-rs ✅ 使用 AgentClient，订阅事件，移除 FileWatcher
    ├── vlaude-core (daemon-logic) ✅ 使用 AgentClient，编译通过
-   ├── VlaudeKit ⏳ Swift 层待改造
-   └── MemexKit ⏳ Swift 层待改造
+   ├── VlaudeKit ✅ Swift 层 AgentClientBridge 已实现
+   └── MemexKit ✅ Swift 层 AgentClientBridge 已实现
 
 3. 移除旧的 Writer 协调机制 ⏳
-   ├── coordination.rs 废弃
+   ├── SharedDbBridge 仍使用 register_writer（需移除）
+   ├── coordination.rs 废弃（feature flag 保护，暂时保留）
    └── writer_registry 表废弃
 
-4. 各产品打包 vimo-agent ✅
-   └── Client 运行时自动部署（无需手动打包）
+4. 构建与部署 ✅
+   ├── build.sh 添加 agent 构建目标
+   └── Client 运行时自动部署到 ~/.vimo/bin/
 ```
 
 ---
@@ -634,3 +636,22 @@ client = []  # Agent Client，供组件使用
 - 问题：Client 找不到 ~/.vimo/bin/vimo-agent
 - 修复：`connect.rs` 添加 `find_agent_binary()` 和 `deploy_agent()`
 - 实现：运行时自动从 target/ 或 app bundle 部署到 ~/.vimo/bin/
+
+### Phase 3: Swift 层改造 + 构建脚本（2026-01-24）
+
+已完成：
+- `ETerm/Plugins/VlaudeKit/Sources/VlaudeKit/AgentClientBridge.swift` - VlaudeKit Agent Client
+- `ETerm/Plugins/MemexKit/Sources/MemexKit/AgentClientBridge.swift` - MemexKit Agent Client
+- `scripts/build.sh` - 添加 `agent` 构建目标
+
+待完成（Phase 4）：
+- 移除 SharedDbBridge 中的 `register_writer`/`release_writer` 调用
+- SharedDbBridge 改为纯读取（Reader-only），写入走 AgentClient
+- 废弃 `coordination` feature flag
+- 清理 `writer_registry` 表相关代码
+
+**⚠️ 当前风险：Agent 和 SharedDbBridge 可能同时写入 DB**
+- Agent 不使用 writer_registry（直接写）
+- SharedDbBridge 使用 writer_registry（旧协调）
+- 两者都可能获得写入权限 = 潜在冲突
+- 需要在 Phase 4 中移除 SharedDbBridge 的写入能力
