@@ -43,8 +43,8 @@ git submodule update --remote
 
 ## 文档
 
-- [ARCHITECTURE.md](../ARCHITECTURE.md) - 架构设计
-- [DEVELOPMENT.md](../DEVELOPMENT.md) - 开发指南
+- [架构设计](../docs/architecture/overview.md) - 架构设计
+- [开发指南](../docs/guides/development.md) - 开发指南
 
 ## 仓库列表
 

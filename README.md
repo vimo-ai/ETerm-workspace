@@ -43,8 +43,8 @@ git submodule update --remote
 
 ## Documentation
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - Architecture design
-- [DEVELOPMENT.md](./DEVELOPMENT.md) - Development guide
+- [Architecture](./docs/architecture/overview.md) - Architecture design
+- [Development Guide](./docs/guides/development.md) - Development guide
 
 ## Repositories
 

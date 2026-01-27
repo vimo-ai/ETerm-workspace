@@ -448,7 +448,7 @@ ETerm/
 
 ## 开发指南
 
-详细开发流程请参考 [DEVELOPMENT.md](./DEVELOPMENT.md)
+详细开发流程请参考 [开发指南](../guides/development.md)
 
 ### 统一编译
 
