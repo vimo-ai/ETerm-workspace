@@ -1,0 +1,65 @@
+[package]
+name = "dev-runner-app"
+version = "0.1.0"
+edition = "2021"
+description = "DevRunner App Layer - Process management and FFI for standalone app"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Core library
+dev-runner-core = { path = "../core" }
+
+# Async runtime
+tokio = { version = "1", features = ["full", "process"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+
+# Concurrency
+parking_lot = "0.12"
+
+# Utils
+uuid = { version = "1", features = ["v4"] }
+
+# System info (for CPU/memory monitoring)
+sysinfo = "0.32"
+
+# FFI
+libc = "0.2"
+vimo-ffi = { git = "https://github.com/vimo-ai/vimo-rust" }
+
+[build-dependencies]
+cbindgen = "0.27"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"
+
+# ============================================================================
+# [patch] - 在 ETerm workspace 中使用本地 vimo-rust submodule
+# ============================================================================
+[patch."https://github.com/vimo-ai/vimo-rust"]
+vimo-ffi = { path = "../../vimo-rust/vimo-ffi" }

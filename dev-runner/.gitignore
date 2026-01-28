@@ -1,0 +1,19 @@
+# Rust build artifacts
+**/target/
+
+# Swift/Xcode build artifacts
+swift-app/build/
+*.xcuserdata
+*.xcworkspace
+DerivedData/
+
+# FFI libraries (copied from ETerm, not source)
+swift-app/Sources/Terminal/Libs/*.a
+swift-app/Sources/Terminal/Libs/*.h
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+*.swp

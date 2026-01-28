@@ -1,0 +1,58 @@
+name: DevRunner
+options:
+  bundleIdPrefix: ai.vimo
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  DevRunner:
+    build:
+      targets:
+        DevRunner: all
+    run:
+      config: Debug
+      executable: DevRunner
+
+targets:
+  DevRunner:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+        excludes:
+          - "**/.DS_Store"
+    resources:
+      - path: Resources
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.vimo.DevRunner
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: YES
+        # FFI library linking
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../app/target/release"
+        OTHER_LDFLAGS:
+          - "-ldev_runner_app"
+        # Header search path
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/FFI/BridgingHeader.h
+    dependencies: []
+    preBuildScripts:
+      - name: "Build Rust FFI"
+        script: |
+          cd "${PROJECT_DIR}/../app"
+          cargo build --release
+        basedOnDependencyAnalysis: false
