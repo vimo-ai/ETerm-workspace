@@ -16,6 +16,8 @@ exclude = [
     "vlaude/packages/vlaude-daemon-rs",
     "ETerm/rio",
     "mcp-router/core",
+    "dev-runner/core",
+    "dev-runner/app",
 ]
 
 [workspace.package]
