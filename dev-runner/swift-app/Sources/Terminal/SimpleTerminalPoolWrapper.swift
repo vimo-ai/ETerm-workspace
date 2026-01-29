@@ -102,6 +102,49 @@ class SimpleTerminalPoolWrapper {
         terminalId = -1
     }
 
+    /// 销毁指定终端
+    func destroyTerminal(_ terminalId: Int) {
+        guard let handle = handle else { return }
+        terminal_pool_close_terminal(handle, terminalId)
+    }
+
+    /// 获取前台进程名称
+    func getForegroundProcessName(_ terminalId: Int) -> String? {
+        guard let handle = handle else { return nil }
+        guard let cStr = terminal_pool_get_foreground_process_name(handle, terminalId) else {
+            return nil
+        }
+        let name = String(cString: cStr)
+        rio_free_string(cStr)
+        return name.isEmpty ? nil : name
+    }
+
+    /// 检查是否有运行中的子进程
+    func hasRunningProcess(_ terminalId: Int) -> Bool {
+        guard let handle = handle else { return false }
+        return terminal_pool_has_running_process(handle, terminalId)
+    }
+
+    /// 向指定终端发送命令
+    func sendCommand(_ command: String, to terminalId: Int) {
+        guard let handle = handle, terminalId >= 0 else { return }
+
+        let input = command + "\n"
+        guard let data = input.data(using: .utf8) else { return }
+
+        data.withUnsafeBytes { ptr in
+            guard let baseAddress = ptr.baseAddress else { return }
+            _ = terminal_pool_input(handle, terminalId, baseAddress.assumingMemoryBound(to: UInt8.self), data.count)
+        }
+    }
+
+    /// 向指定终端发送中断
+    func sendInterrupt(to terminalId: Int) {
+        guard let handle = handle, terminalId >= 0 else { return }
+        var byte: UInt8 = 0x03
+        _ = terminal_pool_input(handle, terminalId, &byte, 1)
+    }
+
     // MARK: - Input
 
     /// 渲染请求回调（由外部设置）
@@ -170,6 +213,11 @@ class SimpleTerminalPoolWrapper {
 
     /// 设置渲染布局（简化版，只有一个终端）
     func setRenderLayout(x: Float, y: Float, width: Float, height: Float, containerHeight: Float) {
+        setRenderLayout(terminalId: terminalId, x: x, y: y, width: width, height: height, containerHeight: containerHeight)
+    }
+
+    /// 设置指定终端的渲染布局
+    func setRenderLayout(terminalId: Int, x: Float, y: Float, width: Float, height: Float, containerHeight: Float) {
         guard let handle = handle, terminalId >= 0 else {
             print("[TerminalPool] setRenderLayout: no handle or termId")
             return
@@ -202,6 +250,12 @@ class SimpleTerminalPoolWrapper {
     ///
     /// - Parameter delta: 滚动行数（正数向上，负数向下）
     func scroll(delta: Int32) {
+        guard let handle = handle, terminalId >= 0 else { return }
+        _ = terminal_pool_scroll(handle, terminalId, delta)
+    }
+
+    /// 滚动指定终端
+    func scroll(terminalId: Int, delta: Int32) {
         guard let handle = handle, terminalId >= 0 else { return }
         _ = terminal_pool_scroll(handle, terminalId, delta)
     }

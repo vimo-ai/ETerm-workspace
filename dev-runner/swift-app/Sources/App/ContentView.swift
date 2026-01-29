@@ -4,7 +4,8 @@ struct ContentView: View {
     @EnvironmentObject var runner: DevRunner
     @State private var isBuilding = false
     @State private var errorMessage: String?
-    @State private var terminalController: SimpleTerminalController?
+    @State private var terminalController: MultiTerminalController?
+    @StateObject private var tabManager = TerminalTabManager()
 
     var body: some View {
         HStack(spacing: 0) {
@@ -285,13 +286,27 @@ struct ContentView: View {
     }
 
     private var terminalArea: some View {
-        SimpleTerminalView(
-            workingDirectory: runner.selectedWorkspace?.path ?? FileManager.default.currentDirectoryPath
-        ) { controller in
-            print("[ContentView] terminalArea: onReady called")
-            DispatchQueue.main.async {
-                self.terminalController = controller
-                print("[ContentView] terminalArea: controller set")
+        VStack(spacing: 0) {
+            // Tab Bar
+            TerminalTabBar(tabManager: tabManager) {
+                // Add new tab
+                terminalController?.createTab()
+            }
+
+            Rectangle()
+                .fill(Theme.border)
+                .frame(height: 1)
+
+            // Terminal View
+            MultiTerminalView(
+                workingDirectory: runner.selectedWorkspace?.path ?? FileManager.default.currentDirectoryPath,
+                tabManager: tabManager
+            ) { controller in
+                print("[ContentView] terminalArea: onReady called")
+                DispatchQueue.main.async {
+                    self.terminalController = controller
+                    print("[ContentView] terminalArea: controller set")
+                }
             }
         }
     }
