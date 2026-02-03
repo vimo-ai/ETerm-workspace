@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var runner: DevRunner
@@ -6,6 +7,8 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var terminalController: MultiTerminalController?
     @StateObject private var tabManager = TerminalTabManager()
+    @State private var isDraggingOver = false  // 拖拽状态
+    @State private var collapsedGroups: Set<String> = []  // 折叠的分组
 
     var body: some View {
         HStack(spacing: 0) {
@@ -34,6 +37,68 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Computed Properties
+
+    /// 按顶层目录分组的 workspaces
+    /// 逻辑：取 ~/Desktop/ 或 ~/Documents/ 等下的第一层目录作为分组
+    /// 例如：~/Desktop/vimo/ETerm 和 ~/Desktop/vimo/calendar 都归到 ~/Desktop/vimo
+    private var groupedWorkspaces: [(id: String, groupName: String?, workspaces: [Workspace])] {
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+
+        // 计算每个 workspace 的分组 key
+        // 规则：home 之后取前两级目录作为分组（如 Desktop/vimo）
+        // 如果路径只有两级或更少，则不分组
+        let grouped = Dictionary(grouping: runner.workspaces) { workspace -> String in
+            let path = workspace.path
+
+            // 去掉 home 前缀，得到相对路径
+            guard path.hasPrefix(homeDir) else {
+                return "__root__"  // 不在 home 下的路径
+            }
+
+            let relativePath = String(path.dropFirst(homeDir.count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let components = relativePath.split(separator: "/").map(String.init)
+
+            // 至少需要 3 级才分组（如 Desktop/vimo/ETerm）
+            // 取前两级作为分组 key（如 Desktop/vimo）
+            if components.count >= 3 {
+                return "\(homeDir)/\(components[0])/\(components[1])"
+            } else {
+                // 直接在 ~/Desktop/ 下的项目，不分组
+                return "__standalone__\(path)"
+            }
+        }
+
+        // 转换为数组
+        var result: [(id: String, groupName: String?, workspaces: [Workspace])] = []
+
+        for (groupKey, workspaces) in grouped {
+            if groupKey.hasPrefix("__standalone__") || groupKey == "__root__" {
+                // 单独的 workspace：不显示组头
+                result.append((id: groupKey, groupName: nil, workspaces: workspaces))
+            } else {
+                // 有分组：显示分组头，缩短路径（home 替换为 ~）
+                let displayPath = groupKey.replacingOccurrences(of: homeDir, with: "~")
+                result.append((id: groupKey, groupName: displayPath, workspaces: workspaces))
+            }
+        }
+
+        // 排序：有 groupName 的在前，nil 的在后；同类按 groupName 排序
+        return result.sorted { lhs, rhs in
+            switch (lhs.groupName, rhs.groupName) {
+            case (nil, nil):
+                return lhs.id < rhs.id
+            case (nil, _):
+                return false
+            case (_, nil):
+                return true
+            case let (l?, r?):
+                return l < r
+            }
+        }
+    }
+
     // MARK: - Sidebar
 
     private var sidebar: some View {
@@ -53,13 +118,49 @@ struct ContentView: View {
             // Workspace list
             ScrollView {
                 VStack(spacing: 4) {
-                    ForEach(runner.workspaces) { workspace in
-                        SciFiSidebarItem(
-                            name: workspace.name,
-                            isSelected: runner.selectedWorkspace?.id == workspace.id,
-                            onSelect: { runner.selectWorkspace(workspace) },
-                            onRemove: { runner.removeWorkspace(workspace) }
-                        )
+                    ForEach(groupedWorkspaces, id: \.id) { group in
+                        // 分组头（如果有）
+                        if let groupName = group.groupName {
+                            Button {
+                                // 切换折叠状态
+                                if collapsedGroups.contains(group.id) {
+                                    collapsedGroups.remove(group.id)
+                                } else {
+                                    collapsedGroups.insert(group.id)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    // 折叠小三角
+                                    Image(systemName: collapsedGroups.contains(group.id) ? "chevron.right" : "chevron.down")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundColor(Theme.textMuted)
+                                        .frame(width: 12)
+
+                                    // 路径文字
+                                    Text(groupName)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(Theme.textMuted)
+
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        // Workspace 列表（展开时）
+                        if group.groupName == nil || !collapsedGroups.contains(group.id) {
+                            ForEach(group.workspaces) { workspace in
+                                SciFiSidebarItem(
+                                    name: workspace.name,
+                                    isSelected: runner.selectedWorkspace?.id == workspace.id,
+                                    onSelect: { runner.selectWorkspace(workspace) },
+                                    onRemove: { runner.removeWorkspace(workspace) }
+                                )
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -91,6 +192,15 @@ struct ContentView: View {
             .padding(12)
         }
         .background(Theme.bgSecondary)
+        .overlay(
+            // 拖拽高亮边框
+            RoundedRectangle(cornerRadius: 0)
+                .stroke(Theme.accent, lineWidth: isDraggingOver ? 2 : 0)
+                .animation(.easeInOut(duration: 0.2), value: isDraggingOver)
+        )
+        .onDrop(of: [.fileURL], isTargeted: $isDraggingOver) { providers in
+            handleDrop(providers: providers)
+        }
     }
 
     // MARK: - Empty State
@@ -334,6 +444,51 @@ struct ContentView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    // 处理拖拽导入
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+
+        // 加载文件 URL
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { (urlData, error) in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.errorMessage = "Failed to load dropped item: \(error.localizedDescription)"
+                    return
+                }
+
+                guard let urlData = urlData as? Data,
+                      let url = URL(dataRepresentation: urlData, relativeTo: nil) else {
+                    self.errorMessage = "Invalid file URL"
+                    return
+                }
+
+                // 检查是否是目录
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else {
+                    self.errorMessage = "Please drop a folder, not a file"
+                    return
+                }
+
+                // 导入 workspace
+                do {
+                    try self.runner.addWorkspace(path: url.path)
+                    if let ws = self.runner.selectedWorkspace {
+                        self.terminalController?.sendCommand("echo '// Workspace: \(ws.name)'")
+                        self.terminalController?.sendCommand("echo '// Found \(ws.projects.count) project(s)'")
+                        for project in ws.projects {
+                            self.terminalController?.sendCommand("echo '//   → \(project.name) (\(project.adapterType))'")
+                        }
+                    }
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+        }
+
+        return true
     }
 
     private func build() {
