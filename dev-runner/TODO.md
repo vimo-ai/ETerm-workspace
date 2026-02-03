@@ -41,7 +41,10 @@ dev-runner/
 ## Medium Priority
 
 ### UI 完善
-- [ ] 运行状态指示（终端 tab 运行中/已停止）
+- [x] 运行状态指示（终端 tab 运行中/已停止）
+- [x] 任务列表视图（TaskListView）
+- [x] 新建任务弹窗（NewTaskSheet）
+- [x] 任务驱动的布局（移除顶部按钮栏）
 - [ ] 错误信息 toast 显示
 - [ ] 最近使用的 scheme/device 记忆
 
@@ -93,7 +96,12 @@ dev-runner/
 - [x] FFI 桥接 (DevRunner.swift)
 - [x] Build/Run/Stop 功能
 - [x] Scheme/Device 选择器
+- [x] Task-Tab 管理系统 (TaskKey/TaskAction)
+- [x] TaskListView 任务列表（运行状态、资源监控）
+- [x] NewTaskSheet 新建任务弹窗
+- [x] 任务驱动的 UI 布局（VSplitView: 任务列表 + 终端）
 
 **下一步**：
 1. ~~ETerm 插件集成~~ — 暂缓
 2. UI 细节打磨
+3. 快捷键支持（Cmd+B 编译、Cmd+R 运行等）

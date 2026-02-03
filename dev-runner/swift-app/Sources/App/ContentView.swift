@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var terminalController: MultiTerminalController?
     @StateObject private var tabManager = TerminalTabManager()
     @State private var isDraggingOver = false
+    @State private var showNewTaskSheet = false
 
     var body: some View {
         HSplitView {
@@ -30,6 +31,17 @@ struct ContentView: View {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+        }
+        .sheet(isPresented: $showNewTaskSheet) {
+            NewTaskSheet(isPresented: $showNewTaskSheet) { action, target, device in
+                startTask(action: action, target: target, device: device)
+            }
+            .environmentObject(runner)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopTask)) { notification in
+            if let terminalId = notification.userInfo?["terminalId"] as? Int {
+                terminalController?.sendInterrupt(to: terminalId)
+            }
         }
     }
 
@@ -77,171 +89,95 @@ struct ContentView: View {
     // MARK: - Main Content
 
     private var mainContent: some View {
-        VStack(spacing: 0) {
-            // Header bar
-            headerBar
+        VSplitView {
+            // 任务列表（上部）
+            TaskListView(tabManager: tabManager, onNewTask: {
+                showNewTaskSheet = true
+            })
+            .frame(minHeight: 120, idealHeight: 180, maxHeight: 300)
 
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
-
-            // Selectors
-            selectorsBar
-
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
-
-            // Terminal output
+            // 终端输出（下部）
             terminalArea
         }
         .background(Theme.bgPrimary)
     }
 
-    private var headerBar: some View {
-        HStack(spacing: 16) {
-            // 当前选中的 Project 信息
-            if let project = runner.selectedProject {
-                HStack(spacing: 8) {
-                    // 项目类型图标
-                    Image(systemName: project.adapterType == "xcode" ? "hammer.fill" : "cube.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
-
-                    // 项目名称
-                    Text(project.name)
-                        .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-
-                    // 类型 badge
-                    Text(project.adapterType == "xcode" ? "Xcode" : "Node")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background((project.adapterType == "xcode" ? Theme.xcode : Theme.node).opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
-            }
-
-            Spacer()
-
-            // Action buttons
-            HStack(spacing: 8) {
-                SciFiButton(
-                    title: "Build",
-                    icon: "hammer.fill",
-                    isActive: false,
-                    isDisabled: runner.selectedTarget == nil || isBuilding,
-                    action: build
-                )
-
-                SciFiButton(
-                    title: "Run",
-                    icon: "play.fill",
-                    isActive: false,
-                    isDisabled: runner.selectedTarget == nil || isBuilding,
-                    action: run
-                )
-
-                SciFiButton(
-                    title: "Stop",
-                    icon: "stop.fill",
-                    isActive: false,
-                    isDisabled: terminalController == nil,
-                    action: stop
-                )
-
-                SciFiButton(
-                    title: "Clear",
-                    icon: "trash",
-                    isActive: false,
-                    isDisabled: terminalController == nil,
-                    action: clear
-                )
-            }
-
-            if isBuilding {
-                ProgressView()
-                    .scaleEffect(0.6)
-                    .tint(Theme.accent)
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(Theme.bgSecondary)
-    }
-
-    private var selectorsBar: some View {
-        HStack(spacing: 16) {
-            // Target - with type badge
-            SciFiPicker(
-                "Target",
-                icon: "target",
-                selection: $runner.selectedTarget,
-                options: runner.targets,
-                optionLabel: { $0.name },
-                optionBadge: { target in
-                    let type = target.targetType.lowercased()
-                    if type.contains("app") {
-                        return ("App", Theme.accent)
-                    } else if type.contains("test") {
-                        return ("Test", Theme.warning)
-                    } else if type.contains("framework") || type.contains("lib") {
-                        return ("Lib", Theme.accentAlt)
-                    } else {
-                        return (target.targetType, Theme.textSecondary)
-                    }
-                }
-            )
-            .frame(width: 200)
-
-            // Device
-            SciFiPicker(
-                "Device",
-                icon: "desktopcomputer",
-                selection: $runner.selectedDevice,
-                options: runner.devices.filter(\.isAvailable),
-                optionLabel: { $0.name },
-                optionIcon: { device in
-                    if device.isMac { return "desktopcomputer" }
-                    if device.isSimulator { return "iphone.gen2" }
-                    return "iphone"
-                }
-            )
-            .frame(width: 180)
-
-            Spacer()
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Theme.bgSecondary.opacity(0.5))
-    }
-
     private var terminalArea: some View {
         VStack(spacing: 0) {
-            // Tab Bar
-            TerminalTabBar(tabManager: tabManager) {
-                // Add new tab
-                terminalController?.createTab()
-            }
+            // Tab Bar (mini version - just shows selected)
+            if let selectedTab = tabManager.selectedTab {
+                miniTabBar(selectedTab)
 
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
+                Rectangle()
+                    .fill(Theme.border)
+                    .frame(height: 1)
+            }
 
             // Terminal View
             MultiTerminalView(
                 workingDirectory: runner.selectedProject?.path ?? FileManager.default.currentDirectoryPath,
                 tabManager: tabManager
             ) { controller in
-                print("[ContentView] terminalArea: onReady called")
                 DispatchQueue.main.async {
                     self.terminalController = controller
-                    print("[ContentView] terminalArea: controller set")
                 }
             }
         }
+    }
+
+    private func miniTabBar(_ tab: TerminalTab) -> some View {
+        HStack(spacing: 8) {
+            // Status
+            Circle()
+                .fill(tab.isRunning ? Theme.success : Theme.textMuted.opacity(0.5))
+                .frame(width: 6, height: 6)
+
+            // Title
+            Text(tab.title)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(Theme.textPrimary)
+
+            Spacer()
+
+            // Quick actions
+            if tab.isRunning {
+                Button {
+                    terminalController?.sendInterrupt(to: tab.terminalId)
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.error)
+                }
+                .buttonStyle(.plain)
+                .help("Stop (Ctrl+C)")
+            }
+
+            Button {
+                terminalController?.clear()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 9))
+                    .foregroundColor(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help("Clear terminal")
+
+            // Add new shell tab
+            Button {
+                if let project = runner.selectedProject {
+                    tabManager.createTab(cwd: project.path, title: "zsh", taskKey: nil)
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 9))
+                    .foregroundColor(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help("New shell tab")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.bgSecondary)
     }
 
     // MARK: - Actions
@@ -256,24 +192,15 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 try runner.addWorkspace(path: url.path)
-                if let ws = runner.selectedWorkspace {
-                    terminalController?.sendCommand("echo '// Workspace: \(ws.name)'")
-                    terminalController?.sendCommand("echo '// Found \(ws.projects.count) project(s)'")
-                    for project in ws.projects {
-                        terminalController?.sendCommand("echo '//   → \(project.name) (\(project.adapterType))'")
-                    }
-                }
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
     }
 
-    // 处理拖拽导入
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
 
-        // 加载文件 URL
         provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { (urlData, error) in
             DispatchQueue.main.async {
                 if let error = error {
@@ -287,7 +214,6 @@ struct ContentView: View {
                     return
                 }
 
-                // 检查是否是目录
                 var isDirectory: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
                       isDirectory.boolValue else {
@@ -295,16 +221,8 @@ struct ContentView: View {
                     return
                 }
 
-                // 导入 workspace
                 do {
                     try self.runner.addWorkspace(path: url.path)
-                    if let ws = self.runner.selectedWorkspace {
-                        self.terminalController?.sendCommand("echo '// Workspace: \(ws.name)'")
-                        self.terminalController?.sendCommand("echo '// Found \(ws.projects.count) project(s)'")
-                        for project in ws.projects {
-                            self.terminalController?.sendCommand("echo '//   → \(project.name) (\(project.adapterType))'")
-                        }
-                    }
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }
@@ -314,45 +232,49 @@ struct ContentView: View {
         return true
     }
 
-    private func build() {
-        guard let project = runner.selectedProject,
-              runner.selectedTarget != nil else {
-            print("[ContentView] build: no project/target selected")
-            return
+    /// 启动任务（从 NewTaskSheet 调用）
+    private func startTask(action: TaskAction, target: TargetInfo?, device: DeviceInfo?) {
+        guard let project = runner.selectedProject else { return }
+
+        // 临时设置 target/device（用于命令生成）
+        if let target = target {
+            runner.selectedTarget = target
+        }
+        if let device = device {
+            runner.selectedDevice = device
         }
 
-        let taskKey = TaskKey(
-            projectPath: project.path,
-            action: .build,
-            deviceId: runner.selectedDevice?.deviceId,
-            deviceName: runner.selectedDevice?.name
-        )
+        switch action {
+        case .shell:
+            // 创建普通 shell tab
+            tabManager.createTab(cwd: project.path, title: "zsh", taskKey: nil)
 
-        executeTask(taskKey: taskKey) {
-            let options = BuildOptions(
-                config: "Debug",
-                deviceId: runner.selectedDevice?.deviceId
+        case .build:
+            let taskKey = TaskKey(
+                projectPath: project.path,
+                action: .build,
+                deviceId: device?.deviceId,
+                deviceName: device?.name
             )
-            return try runner.buildCommand(options: options)
-        }
-    }
+            executeTask(taskKey: taskKey) {
+                let options = BuildOptions(
+                    config: "Debug",
+                    deviceId: device?.deviceId
+                )
+                return try runner.buildCommand(options: options)
+            }
 
-    private func run() {
-        guard let project = runner.selectedProject,
-              runner.selectedTarget != nil else {
-            return
-        }
-
-        let taskKey = TaskKey(
-            projectPath: project.path,
-            action: .run,
-            deviceId: runner.selectedDevice?.deviceId,
-            deviceName: runner.selectedDevice?.name
-        )
-
-        executeTask(taskKey: taskKey) {
-            let options = RunOptions(deviceId: runner.selectedDevice?.deviceId)
-            return try runner.runCommand(options: options)
+        case .run:
+            let taskKey = TaskKey(
+                projectPath: project.path,
+                action: .run,
+                deviceId: device?.deviceId,
+                deviceName: device?.name
+            )
+            executeTask(taskKey: taskKey) {
+                let options = RunOptions(deviceId: device?.deviceId)
+                return try runner.runCommand(options: options)
+            }
         }
     }
 
@@ -378,9 +300,7 @@ struct ContentView: View {
 
             // 如果正在运行，先停止
             if wasRunning {
-                print("[ContentView] executeTask: stopping existing process in tab \(tab.title)")
                 terminalController?.sendInterrupt(to: tab.terminalId)
-                // 等待进程停止
                 try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
             }
 
@@ -393,8 +313,6 @@ struct ContentView: View {
                     fullCommand += " " + cmd.args.joined(separator: " ")
                 }
 
-                print("[ContentView] executeTask: \(taskKey.displayName) -> \(fullCommand)")
-
                 // 发送命令到对应 tab 的终端
                 if let cwd = cmd.cwd {
                     terminalController?.sendCommand("cd '\(cwd)' && \(fullCommand)", to: tab.terminalId)
@@ -402,21 +320,9 @@ struct ContentView: View {
                     terminalController?.sendCommand(fullCommand, to: tab.terminalId)
                 }
             } catch {
-                print("[ContentView] executeTask: error=\(error)")
                 errorMessage = error.localizedDescription
             }
         }
-    }
-
-    private func stop() {
-        // 停止当前选中 tab 的进程
-        if let tab = tabManager.selectedTab {
-            terminalController?.sendInterrupt(to: tab.terminalId)
-        }
-    }
-
-    private func clear() {
-        terminalController?.clear()
     }
 }
 
