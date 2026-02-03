@@ -121,6 +121,26 @@ impl NodeAdapter {
     }
 }
 
+/// Script 优先级（数字越小越靠前）
+fn script_priority(name: &str) -> u8 {
+    let name_lower = name.to_lowercase();
+    if name_lower.starts_with("dev") {
+        1
+    } else if name_lower.starts_with("start") {
+        2
+    } else if name_lower.starts_with("build") {
+        3
+    } else if name_lower.starts_with("test") {
+        4
+    } else if name_lower.starts_with("lint") {
+        5
+    } else if name_lower.starts_with("format") || name_lower.starts_with("fmt") {
+        6
+    } else {
+        99
+    }
+}
+
 impl RunnerAdapter for NodeAdapter {
     fn adapter_type(&self) -> &'static str {
         "node"
@@ -135,14 +155,24 @@ impl RunnerAdapter for NodeAdapter {
     }
 
     fn targets(&self) -> Vec<RunTarget> {
-        self.scripts
+        let mut targets: Vec<RunTarget> = self
+            .scripts
             .keys()
             .map(|name| RunTarget {
                 name: name.clone(),
                 target_type: "script".to_string(),
                 description: self.scripts.get(name).cloned(),
             })
-            .collect()
+            .collect();
+
+        // 智能排序：常用 script 优先，其他字母序
+        targets.sort_by(|a, b| {
+            let priority_a = script_priority(&a.name);
+            let priority_b = script_priority(&b.name);
+            priority_a.cmp(&priority_b).then_with(|| a.name.cmp(&b.name))
+        });
+
+        targets
     }
 
     fn build_cmd(&self, target: &str, _options: &BuildOptions) -> Option<Command> {

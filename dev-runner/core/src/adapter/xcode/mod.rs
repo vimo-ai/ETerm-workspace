@@ -129,17 +129,16 @@ impl XcodeAdapter {
         Platform::MacOS
     }
 
-    /// Parse schemes using xcodebuild -list (primary) or from xcscheme files (fallback)
+    /// Parse schemes: 优先读 .xcscheme 文件（快），fallback 到 xcodebuild -list（慢）
     fn parse_schemes(&self) -> Vec<String> {
-        // Try xcodebuild -list first (more reliable)
-        if let Some(schemes) = self.parse_schemes_via_xcodebuild() {
-            if !schemes.is_empty() {
-                return schemes;
-            }
+        // 优先直接读 scheme 文件（毫秒级）
+        let schemes = self.parse_schemes_from_files();
+        if !schemes.is_empty() {
+            return schemes;
         }
 
-        // Fallback: parse xcscheme files directly
-        self.parse_schemes_from_files()
+        // Fallback: xcodebuild -list（秒级，但更可靠）
+        self.parse_schemes_via_xcodebuild().unwrap_or_default()
     }
 
     /// Use xcodebuild -list to get schemes

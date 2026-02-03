@@ -1,12 +1,31 @@
 //! Device listing for Xcode adapter
 //!
 //! Handles parsing of `xcrun simctl list -j` and `xcrun devicectl list devices --json-output`
+//! 带缓存，避免频繁调用慢速命令
 
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::adapter::{Device, DeviceState, DeviceType};
+
+// ============================================================================
+// Device Cache（30 秒 TTL）
+// ============================================================================
+
+const CACHE_TTL: Duration = Duration::from_secs(30);
+
+struct DeviceCache {
+    simulators: Option<(Instant, Vec<Device>)>,
+    physical: Option<(Instant, Vec<Device>)>,
+}
+
+static DEVICE_CACHE: Mutex<DeviceCache> = Mutex::new(DeviceCache {
+    simulators: None,
+    physical: None,
+});
 
 /// Platform type for filtering devices
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +187,36 @@ pub fn parse_simulators(json: &str, platform: Platform) -> Result<Vec<Device>, s
     Ok(devices)
 }
 
+/// Parse simctl JSON output into Device list（所有平台，用于缓存）
+fn parse_simulators_all(json: &str) -> Result<Vec<Device>, serde_json::Error> {
+    let output: SimctlOutput = serde_json::from_str(json)?;
+
+    let mut devices = Vec::new();
+
+    for (_runtime_id, sims) in &output.devices {
+        for sim in sims {
+            if !sim.is_available {
+                continue;
+            }
+
+            let state = match sim.state.as_str() {
+                "Booted" | "Shutdown" => DeviceState::Available,
+                _ => DeviceState::Unknown,
+            };
+
+            devices.push(Device {
+                id: sim.udid.clone(),
+                name: sim.name.clone(),
+                device_type: DeviceType::Simulator,
+                os_version: None,
+                state,
+            });
+        }
+    }
+
+    Ok(devices)
+}
+
 /// Parse devicectl JSON output into Device list, filtered by platform
 pub fn parse_physical_devices(json: &str, platform: Platform) -> Result<Vec<Device>, serde_json::Error> {
     let output: DevicectlOutput = serde_json::from_str(json)?;
@@ -209,8 +258,30 @@ pub fn parse_physical_devices(json: &str, platform: Platform) -> Result<Vec<Devi
 // Command execution
 // ============================================================================
 
-/// Fetch simulator list via simctl, filtered by platform
+/// Fetch simulator list via simctl, filtered by platform（带缓存）
 pub fn fetch_simulators(platform: Platform) -> Vec<Device> {
+    // 检查缓存
+    if let Ok(cache) = DEVICE_CACHE.lock() {
+        if let Some((ts, devices)) = &cache.simulators {
+            if ts.elapsed() < CACHE_TTL {
+                return filter_by_platform(devices, platform);
+            }
+        }
+    }
+
+    // 缓存过期或不存在，重新获取
+    let devices = fetch_simulators_uncached();
+
+    // 更新缓存
+    if let Ok(mut cache) = DEVICE_CACHE.lock() {
+        cache.simulators = Some((Instant::now(), devices.clone()));
+    }
+
+    filter_by_platform(&devices, platform)
+}
+
+/// 不带缓存的模拟器获取
+fn fetch_simulators_uncached() -> Vec<Device> {
     let output = Command::new("xcrun")
         .args(["simctl", "list", "-j"])
         .output();
@@ -218,15 +289,55 @@ pub fn fetch_simulators(platform: Platform) -> Vec<Device> {
     match output {
         Ok(out) if out.status.success() => {
             let json = String::from_utf8_lossy(&out.stdout);
-            parse_simulators(&json, platform).unwrap_or_default()
+            // 解析所有平台的模拟器
+            parse_simulators_all(&json).unwrap_or_default()
         }
         _ => Vec::new(),
     }
 }
 
-/// Fetch physical device list via devicectl, filtered by platform
+/// 按平台过滤设备
+fn filter_by_platform(devices: &[Device], platform: Platform) -> Vec<Device> {
+    devices
+        .iter()
+        .filter(|d| {
+            let name_lower = d.name.to_lowercase();
+            match platform {
+                Platform::IOS => name_lower.contains("iphone") || name_lower.contains("ipad"),
+                Platform::TvOS => name_lower.contains("apple tv"),
+                Platform::WatchOS => name_lower.contains("apple watch"),
+                Platform::VisionOS => name_lower.contains("apple vision"),
+                Platform::MacOS => false, // macOS 没有模拟器
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Fetch physical device list via devicectl, filtered by platform（带缓存）
 pub fn fetch_physical_devices(platform: Platform) -> Vec<Device> {
-    // devicectl requires --json-output to a file, use temp file
+    // 检查缓存
+    if let Ok(cache) = DEVICE_CACHE.lock() {
+        if let Some((ts, devices)) = &cache.physical {
+            if ts.elapsed() < CACHE_TTL {
+                return filter_physical_by_platform(devices, platform);
+            }
+        }
+    }
+
+    // 缓存过期或不存在，重新获取
+    let devices = fetch_physical_devices_uncached();
+
+    // 更新缓存
+    if let Ok(mut cache) = DEVICE_CACHE.lock() {
+        cache.physical = Some((Instant::now(), devices.clone()));
+    }
+
+    filter_physical_by_platform(&devices, platform)
+}
+
+/// 不带缓存的物理设备获取
+fn fetch_physical_devices_uncached() -> Vec<Device> {
     let temp_path = std::env::temp_dir().join("devrunner_devices.json");
 
     let status = Command::new("xcrun")
@@ -241,13 +352,50 @@ pub fn fetch_physical_devices(platform: Platform) -> Vec<Device> {
 
     if status.map(|s| s.success()).unwrap_or(false) {
         if let Ok(json) = std::fs::read_to_string(&temp_path) {
-            // Clean up temp file
             let _ = std::fs::remove_file(&temp_path);
-            return parse_physical_devices(&json, platform).unwrap_or_default();
+            return parse_physical_devices_all(&json).unwrap_or_default();
         }
     }
 
     Vec::new()
+}
+
+/// Parse all physical devices without platform filtering
+fn parse_physical_devices_all(json: &str) -> Result<Vec<Device>, serde_json::Error> {
+    let output: DevicectlOutput = serde_json::from_str(json)?;
+
+    let devices = output
+        .result
+        .devices
+        .into_iter()
+        .map(|d| {
+            let state = match d.connection_properties.tunnel_state.as_str() {
+                "connected" => DeviceState::Available,
+                "disconnected" => DeviceState::Unavailable,
+                _ => DeviceState::Unknown,
+            };
+
+            Device {
+                id: d.identifier,
+                name: d.device_properties.name,
+                device_type: DeviceType::Physical,
+                os_version: d.device_properties.os_version,
+                state,
+            }
+        })
+        .collect();
+
+    Ok(devices)
+}
+
+/// 按平台过滤物理设备
+fn filter_physical_by_platform(devices: &[Device], platform: Platform) -> Vec<Device> {
+    // 物理设备没有直接的平台标识，基于 OS 版本判断
+    // 暂时返回所有设备（iOS 设备可以跑 iOS/tvOS/watchOS app）
+    if platform == Platform::MacOS {
+        return Vec::new();
+    }
+    devices.to_vec()
 }
 
 #[cfg(test)]
