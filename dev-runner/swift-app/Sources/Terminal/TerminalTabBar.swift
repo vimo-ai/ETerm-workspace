@@ -70,16 +70,19 @@ private struct TabItem: View {
                 .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
                 .lineLimit(1)
 
-            // Port badges
-            if !tab.ports.isEmpty {
-                ForEach(tab.ports, id: \.self) { port in
-                    Text(":\(port)")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundColor(Theme.accent)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Theme.accent.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
+            // Port badge (compact: show first port only)
+            if let port = tab.ports.first {
+                Text(":\(String(port))")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Theme.accent)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Theme.accent.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                if tab.ports.count > 1 {
+                    Text("+\(String(tab.ports.count - 1))")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(Theme.textMuted)
                 }
             }
 
