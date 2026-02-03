@@ -12,20 +12,21 @@ struct TerminalProcessInfo: Equatable {
     var processName: String = ""
     var isRunning: Bool = false
     var listeningPorts: [UInt16] = []
-    var childCount: Int = 0
 }
 
 /// 进程监控器
 ///
-/// 定期检测每个终端的前台进程信息：
-/// - 进程名（通过 TerminalPool FFI）
-/// - 监听端口（通过 lsof）
-/// - 子进程数量（通过 pgrep）
+/// 通过基线快照机制检测端口：
+/// - 终端创建时记录系统端口基线
+/// - 只显示基线之后新增的端口
 class ProcessMonitor {
 
     private weak var pool: SimpleTerminalPoolWrapper?
     private var timer: Timer?
-    private var processInfoCache: [Int: TerminalProcessInfo] = [:]  // terminalId -> ProcessInfo
+    private var processInfoCache: [Int: TerminalProcessInfo] = [:]
+
+    /// 每个终端创建时的端口基线
+    private var portBaseline: [Int: Set<UInt16>] = [:]
 
     /// 监控信息更新回调
     var onUpdate: (([Int: TerminalProcessInfo]) -> Void)?
@@ -36,23 +37,34 @@ class ProcessMonitor {
         self.pool = pool
     }
 
-    /// 开始监控
-    func start(interval: TimeInterval = 2.0) {
+    func start(interval: TimeInterval = 3.0) {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.poll()
+            DispatchQueue.global(qos: .utility).async {
+                self?.poll()
+            }
         }
     }
 
-    /// 停止监控
     func stop() {
         timer?.invalidate()
         timer = nil
     }
 
-    /// 查询指定终端的进程信息
     func info(for terminalId: Int) -> TerminalProcessInfo {
         processInfoCache[terminalId] ?? TerminalProcessInfo()
+    }
+
+    /// 注册终端 - 同时记录端口基线
+    func registerTerminal(_ terminalId: Int) {
+        processInfoCache[terminalId] = TerminalProcessInfo()
+        // 快照当前系统所有端口作为基线
+        portBaseline[terminalId] = currentSystemPorts()
+    }
+
+    func unregisterTerminal(_ terminalId: Int) {
+        processInfoCache.removeValue(forKey: terminalId)
+        portBaseline.removeValue(forKey: terminalId)
     }
 
     // MARK: - Polling
@@ -60,8 +72,9 @@ class ProcessMonitor {
     private func poll() {
         guard let pool = pool else { return }
 
-        // 获取所有监听端口的快照（一次 lsof 调用）
+        // 获取当前所有监听端口（进程名 → 端口集合）
         let portMap = detectAllListeningPorts()
+        let allCurrentPorts = Set(portMap.values.flatMap { $0 })
 
         var updated = false
         for (terminalId, oldInfo) in processInfoCache {
@@ -72,20 +85,16 @@ class ProcessMonitor {
                 newInfo.processName = name
             }
 
-            // 是否在运行
+            // 运行状态
             newInfo.isRunning = pool.hasRunningProcess(terminalId)
 
-            // 端口 - 根据进程名匹配（小写比较，处理 lsof COMMAND 截断）
-            if !newInfo.processName.isEmpty {
+            // 端口检测 - 只显示基线后新增且属于当前进程的端口
+            if !newInfo.processName.isEmpty, let baseline = portBaseline[terminalId] {
                 let key = newInfo.processName.lowercased()
-                // 精确匹配 or 前缀匹配（lsof 截断到 9 字符）
-                if let ports = portMap[key] {
-                    newInfo.listeningPorts = ports
-                } else {
-                    // lsof COMMAND 可能被截断，用前缀匹配
-                    let truncated = String(key.prefix(9))
-                    newInfo.listeningPorts = portMap[truncated] ?? []
-                }
+                let processPorts = Set(portMap[key] ?? portMap[String(key.prefix(9))] ?? [])
+                // 交集：属于此进程 AND 不在基线中
+                let newPorts = processPorts.subtracting(baseline)
+                newInfo.listeningPorts = newPorts.sorted()
             }
 
             if newInfo != oldInfo {
@@ -95,58 +104,53 @@ class ProcessMonitor {
         }
 
         if updated {
-            onUpdate?(processInfoCache)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.onUpdate?(self.processInfoCache)
+            }
         }
-    }
-
-    /// 注册终端 ID
-    func registerTerminal(_ terminalId: Int) {
-        processInfoCache[terminalId] = TerminalProcessInfo()
-    }
-
-    /// 注销终端 ID
-    func unregisterTerminal(_ terminalId: Int) {
-        processInfoCache.removeValue(forKey: terminalId)
     }
 
     // MARK: - Port Detection
 
-    /// 检测所有监听端口，返回 [进程名: [端口]] 映射
+    /// 获取当前系统所有监听端口
+    private func currentSystemPorts() -> Set<UInt16> {
+        let portMap = detectAllListeningPorts()
+        return Set(portMap.values.flatMap { $0 })
+    }
+
+    /// 检测所有监听端口，返回 [进程名(小写): [端口]]
     private func detectAllListeningPorts() -> [String: [UInt16]] {
         let output = runCommand("/usr/sbin/lsof", args: ["-i", "-P", "-n", "-sTCP:LISTEN"])
         guard !output.isEmpty else { return [:] }
 
         var result: [String: [UInt16]] = [:]
 
-        // 解析 lsof 输出
-        // COMMAND  PID  USER  FD  TYPE DEVICE SIZE/OFF NODE NAME
-        // node    1234  user  22u IPv4 ...          TCP *:3000 (LISTEN)
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard fields.count >= 9 else { continue }
+            guard fields.count >= 10 else { continue }
 
             let command = String(fields[0]).lowercased()
-            let name = String(fields.last ?? "")
+            guard command != "command" else { continue }
 
-            // 解析端口号：*:3000 或 127.0.0.1:8080
-            if let colonIndex = name.lastIndex(of: ":") {
-                let portStr = name[name.index(after: colonIndex)...]
-                    .replacingOccurrences(of: " (LISTEN)", with: "")
+            // 地址:端口 在倒数第 2 个字段
+            let addrPort = String(fields[fields.count - 2])
+
+            if let colonIndex = addrPort.lastIndex(of: ":") {
+                let portStr = addrPort[addrPort.index(after: colonIndex)...]
                 if let port = UInt16(portStr) {
                     result[command, default: []].append(port)
                 }
             }
         }
 
-        // 去重
+        // 去重排序
         for key in result.keys {
-            result[key] = Array(Set(result[key] ?? []).sorted())
+            result[key] = Array(Set(result[key]!)).sorted()
         }
 
         return result
     }
-
-    // MARK: - Shell Execution
 
     private func runCommand(_ path: String, args: [String]) -> String {
         let process = Process()
@@ -160,7 +164,6 @@ class ProcessMonitor {
         do {
             try process.run()
             process.waitUntilExit()
-
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8) ?? ""
         } catch {
