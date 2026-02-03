@@ -132,10 +132,11 @@ log stream --predicate 'subsystem == "com.xxx"'
 - CPU 使用率
 - 内存占用
 
-**展示**：
-- 内联显示在运行中的项目旁边
-- 不单独弹窗
+**实现状态**：
+- ✅ Rust 层 `ProcessMonitor` 已实现 (sysinfo)
+- ⏸️ UI 展示暂未集成（终端方案下进程由 PTY 管理，PID 获取复杂）
 
+**原设计展示方案**（待后续实现）：
 ```
 ┌─ 项目列表 ──────────────────────────────────┐
 │ ● MyApp                    CPU 12% | 45MB  │
@@ -184,34 +185,22 @@ log stream --predicate 'subsystem == "com.xxx"'
 
 ---
 
-## ETerm 集成
+## ETerm 集成（计划中）
 
-**入口**：
-- MenuBar 放入口
-- 点击打开 DevRunner Tab
+> **状态**：暂未实现，当前聚焦独立 App
 
-**UI 形态**：
-- 作为 ETerm 的 TabView
-- 和终端 tab 并列
-
-**控制面板**：
-- DevRunner Tab 只做控制面板（项目选择、scheme/device 选择、按钮）
-- 不内嵌日志显示
-
-**终端增强**：
-- 点击 Run → 新开终端 tab 执行构建命令
-- 点击 Logs → 新开终端 tab 执行日志命令
-- 利用 ETerm 已有的终端渲染、搜索、选择能力
+**预期方案**（与独立 App 类似）：
+- 作为 ETerm 插件 (`DevRunnerKit`)
+- 只依赖 `dev-runner-core`
+- 用 ETerm 终端执行命令（与独立 App 方案一致）
 
 ```
 ┌─ ETerm ────────────────────────────────────────────────────┐
 │ [🔨 DevRunner] [Build: MyApp] [Logs: MyApp]  ← 多个 Tab    │
 ├────────────────────────────────────────────────────────────┤
-│                                                            │
-│  DevRunner Tab: 控制面板                                    │
-│  Build Tab: xcodebuild 输出（终端）                         │
-│  Logs Tab: log stream 输出（终端）                          │
-│                                                            │
+│  DevRunner Tab: 控制面板 (Scheme/Device 选择)              │
+│  Build Tab: xcodebuild 输出（ETerm 终端）                  │
+│  Logs Tab: log stream 输出（ETerm 终端）                   │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -228,135 +217,141 @@ log stream --predicate 'subsystem == "com.xxx"'
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Swift 层                                    │
-│  ┌─────────────────────┐     ┌─────────────────────────────┐   │
-│  │    独立 App         │     │      ETerm 插件              │   │
-│  │  (DevRunner.app)    │     │    (DevRunnerKit)           │   │
-│  └──────────┬──────────┘     └──────────────┬──────────────┘   │
-│             │ FFI                           │ FFI              │
-└─────────────┼───────────────────────────────┼──────────────────┘
-              │                               │
-┌─────────────┼───────────────────────────────┼──────────────────┐
-│             ▼                               │                   │
-│  ┌─────────────────────┐                    │                   │
-│  │   dev-runner-app    │ ← App 专用中间层    │                   │
-│  │  (进程管理、状态)    │                    │                   │
-│  └──────────┬──────────┘                    │                   │
-│             │                               │                   │
-│             ▼                               ▼                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                  dev-runner-core                         │   │
-│  │           (项目检测、Command 生成、输出解析)              │   │
-│  │                   App + ETerm 共用                       │   │
+│  │                   独立 App (DevRunner.app)               │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │   │
+│  │  │ ContentView │  │ SidebarView │  │ MultiTerminalView│  │   │
+│  │  └──────┬──────┘  └─────────────┘  └────────┬────────┘  │   │
+│  │         │                                    │           │   │
+│  │         │ FFI (Command 生成)                 │ PTY       │   │
+│  │         ▼                                    ▼           │   │
+│  │  ┌─────────────┐                    ┌─────────────────┐  │   │
+│  │  │ DevRunner   │ ──── Command ────→ │  Terminal执行   │  │   │
+│  │  │ (FFI Bridge)│                    │  (直接PTY输出)  │  │   │
+│  │  └─────────────┘                    └─────────────────┘  │   │
 │  └─────────────────────────────────────────────────────────┘   │
-│                          Rust 层                                │
 └─────────────────────────────────────────────────────────────────┘
+                              │ FFI
+┌─────────────────────────────┼───────────────────────────────────┐
+│                             ▼                                    │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                  dev-runner-core                         │    │
+│  │           (项目检测、Command 生成、设备列表)              │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                  dev-runner-app (备用)                   │    │
+│  │           (ProcessManager - 当前未使用)                  │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                          Rust 层                                 │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+> **实际方案变更**：Swift App 使用内嵌终端 (PTY) 直接执行命令，
+> Rust 层只负责生成 Command。ProcessManager 保留但当前未使用。
 
 ### 职责划分
 
-| 层 | crate | 职责 | 特点 |
-|----|-------|------|-----|
-| **core** | `dev-runner-core` | 项目检测、Command 生成、输出格式化、设备列表、配置管理 | 纯数据，无 IO 副作用 |
-| **app** | `dev-runner-app` | 进程生命周期、输出捕获、状态管理 | 有 IO、有状态 |
+| 层 | crate | 职责 | 当前状态 |
+|----|-------|------|----------|
+| **core** | `dev-runner-core` | 项目检测、Command 生成、设备列表、配置管理 | ✅ 使用中 |
+| **app** | `dev-runner-app` | 进程生命周期、输出捕获、CPU/内存监控 | ⏸️ 保留未使用 |
 
-### ETerm 插件如何使用
+### 独立 App 实际方案
 
-ETerm 插件**只依赖 core**：
+Swift App **只依赖 core**：
 - 用 core 检测项目、生成 Command
-- 用 ETerm 的 PTY 执行命令（不需要 app 层的 ProcessManager）
-- 输出直接走终端，无需捕获
+- 用内嵌终端 (PTY) 执行命令
+- 输出直接走终端渲染，无需 Rust 层捕获
+- 这与原计划的 ETerm 插件方案一致
 
-### 目录结构
+### 目录结构（实际）
 
 ```
 ETerm/dev-runner/
-├── core/                           # 底层 Rust (App + ETerm 共用)
+├── core/                           # 底层 Rust ✅ 使用中
 │   ├── Cargo.toml
+│   ├── build.rs                    # cbindgen 生成头文件
 │   └── src/
 │       ├── lib.rs
-│       ├── adapter/                # 项目适配器
-│       │   ├── mod.rs
+│       ├── ffi/mod.rs              # FFI 导出
+│       ├── adapter/
 │       │   ├── traits.rs           # RunnerAdapter trait
-│       │   ├── xcode/              # Xcode 适配器
-│       │   │   ├── mod.rs          # 项目解析、scheme、bundle id
-│       │   │   └── devices.rs      # 模拟器/真机列表
-│       │   └── node/               # Node 适配器
-│       │       └── mod.rs          # package.json 解析
-│       ├── output/                 # 输出解析
-│       │   └── mod.rs              # xcbeautify 格式化等
-│       └── config/                 # 配置管理
-│           └── mod.rs
+│       │   ├── xcode/mod.rs        # XcodeAdapter (883行)
+│       │   ├── xcode/devices.rs    # simctl/devicectl
+│       │   └── node/mod.rs         # NodeAdapter
+│       ├── output/mod.rs           # OutputEvent
+│       └── config/mod.rs           # ConfigManager
 │
-├── app/                            # App 专用中间层 Rust
-│   ├── Cargo.toml
+├── app/                            # App 专用层 ⏸️ 保留未使用
 │   └── src/
-│       ├── lib.rs
-│       ├── process/                # 进程管理
-│       │   ├── mod.rs
-│       │   ├── manager.rs          # 进程生命周期
-│       │   └── monitor.rs          # CPU/内存监控
-│       ├── state/                  # App 状态管理
-│       │   └── mod.rs
-│       └── ffi/                    # Swift FFI
-│           └── mod.rs
+│       ├── process/manager.rs      # ProcessManager
+│       ├── process/monitor.rs      # ProcessMonitor
+│       └── ffi/                    # FFI 导出
 │
-├── swift-app/                      # 独立 macOS App (Swift)
+├── swift-app/                      # 独立 macOS App ✅
 │   ├── DevRunner.xcodeproj
-│   └── DevRunner/
+│   └── Sources/
 │       ├── App/
-│       ├── Bridge/
-│       └── Views/
+│       │   ├── ContentView.swift   # 主界面 (HSplitView)
+│       │   ├── SidebarView.swift   # 侧边栏 (树形项目列表)
+│       │   └── Theme.swift
+│       ├── Terminal/               # 内嵌终端组件
+│       │   ├── MultiTerminalView.swift
+│       │   └── TerminalTabManager.swift
+│       └── FFI/DevRunner.swift     # Rust 桥接
 │
-└── DESIGN.md
-
-ETerm/ETerm/Plugins/DevRunnerKit/   # ETerm 插件 (只依赖 core)
-├── Package.swift
-├── Libs/DevRunnerCore/             # core 的 FFI dylib
-└── Sources/DevRunnerKit/
-    ├── DevRunnerPlugin.swift
-    └── Views/
+├── DESIGN.md
+└── TODO.md
 ```
+
+> ETerm 插件 (`DevRunnerKit`) 暂未创建。
 
 ---
 
 ## Runner 通用架构
 
-### 分层设计
+### 实际分层
 
 ```
-┌─ dev-runner-app (App 专用) ────────────────────────────────┐
+┌─ Swift App ────────────────────────────────────────────────┐
 │                                                            │
-│  ProcessManager                 StateManager               │
-│  ├─ start(command)              ├─ 项目状态                │
-│  ├─ stop(process_id)            ├─ 运行状态                │
-│  ├─ 输出捕获 → channel          └─ UI 状态同步             │
-│  └─ 进程监控 (CPU/内存)                                    │
+│  ContentView                    MultiTerminalView          │
+│  ├─ Build/Run/Stop 按钮         ├─ PTY 终端渲染            │
+│  ├─ Scheme/Device 选择          ├─ 命令执行                │
+│  └─ 调用 FFI 生成 Command       └─ 输出直接显示            │
 │                                                            │
 └────────────────────────────────────────────────────────────┘
-                              │ 依赖
+                              │ FFI
                               ▼
-┌─ dev-runner-core (共用) ───────────────────────────────────┐
+┌─ dev-runner-core ─────────────────────────────────────────┐
 │                                                            │
 │  RunnerAdapter (trait)                                     │
 │  ├─ detect(path)            # 检测项目类型                 │
 │  ├─ targets()               # 可运行目标列表               │
 │  ├─ build_cmd()             # 生成构建命令                 │
 │  ├─ run_cmd()               # 生成运行命令                 │
+│  ├─ install_cmd()           # 生成安装命令                 │
 │  ├─ log_cmd()               # 生成日志命令                 │
-│  ├─ devices()               # 设备列表 (Xcode)             │
-│  └─ format_output()         # 格式化输出                   │
+│  └─ devices()               # 设备列表 (Xcode)             │
 │                                                            │
 │  ┌──────────────────┐   ┌──────────────────┐              │
 │  │  XcodeAdapter    │   │   NodeAdapter    │              │
 │  │  ├─ schemes      │   │  ├─ scripts      │              │
 │  │  ├─ bundle_id    │   │  └─ pkg manager  │              │
+│  │  ├─ platform     │   │                  │              │
 │  │  └─ devices      │   │                  │              │
 │  └──────────────────┘   └──────────────────┘              │
 │                                                            │
-│  ConfigManager              OutputFormatter                │
-│  ├─ 全局配置                ├─ xcbeautify                  │
-│  └─ 项目配置                └─ 其他格式化                  │
+│  ConfigManager                                             │
+│  ├─ 全局配置 (~/.vimo/dev-runner/config.json)             │
+│  └─ 项目列表 (projects.json)                              │
 │                                                            │
+└────────────────────────────────────────────────────────────┘
+
+┌─ dev-runner-app (保留，当前未使用) ───────────────────────┐
+│  ProcessManager / ProcessMonitor                          │
+│  可用于未来非终端方案或 Headless 场景                      │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -544,5 +539,10 @@ terminalTab.spawn(command.program, args: command.args)
 
 ## 更新记录
 
+- 2025-02-03: 文档与实现对齐
+  - 明确 Swift App 使用终端直接执行方案（非 ProcessManager）
+  - dev-runner-app 层保留但当前未使用
+  - 实时监控 UI 暂未集成
+  - ETerm 插件暂缓
 - 2025-01-28: 明确两层 Rust 架构（core 共用 + app 专用）
 - 2025-01-28: 初始设计文档，完成功能讨论

@@ -3,14 +3,14 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		1B372A8AFB9B637EC5A61F97 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FF090D41A7860ACA07F8D28 /* ContentView.swift */; };
+		48D9E3292F31D89C001D7F5B /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48D9E3282F31D89C001D7F5B /* SidebarView.swift */; };
 		542BDA4273755F61ABD3F5F6 /* DevRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA8CDAD97BF595FD7789E12 /* DevRunner.swift */; };
 		64DA73E651A9C50C46905DE7 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34EB77C3FAEBAF47037A33F2 /* Theme.swift */; };
-		E1D437814D1CD4A1624F9A1B /* DevRunnerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */; };
 		A1B2C3D4E5F67890A1B2C3D4 /* SimpleTerminalPoolWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */; };
 		A1B2C3D4E5F67890A1B2C3D6 /* SimpleRenderScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */; };
 		A1B2C3D4E5F67890A1B2C3D8 /* SimpleTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */; };
@@ -19,20 +19,22 @@
 		B1C2D3E4F5A67890B1C2D3E2 /* TerminalTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */; };
 		B1C2D3E4F5A67890B1C2D3E4 /* TerminalTabManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */; };
 		B1C2D3E4F5A67890B1C2D3E6 /* ProcessMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E7 /* ProcessMonitor.swift */; };
+		E1D437814D1CD4A1624F9A1B /* DevRunnerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		34EB77C3FAEBAF47037A33F2 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		48D9E3282F31D89C001D7F5B /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		5FF090D41A7860ACA07F8D28 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevRunnerApp.swift; sourceTree = "<group>"; };
 		73F4CD3E371232E813576DD9 /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
 		8CA8CDAD97BF595FD7789E12 /* DevRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevRunner.swift; sourceTree = "<group>"; };
-		ACCCB25D5AED6D63F65F55AC /* DevRunner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DevRunner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalPoolWrapper.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleRenderScheduler.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F67890A1B2C3DB /* libsugarloaf_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsugarloaf_ffi.a; sourceTree = "<group>"; };
 		A1B2C3D4E5F67890A1B2C3DC /* SugarloafBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SugarloafBridge.h; sourceTree = "<group>"; };
+		ACCCB25D5AED6D63F65F55AC /* DevRunner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DevRunner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B1C2D3E4F5A67890B1C2D3E1 /* MultiTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiTerminalView.swift; sourceTree = "<group>"; };
 		B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabBar.swift; sourceTree = "<group>"; };
 		B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabManager.swift; sourceTree = "<group>"; };
@@ -67,9 +69,34 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		A1B2C3D4E5F67890A1B2C3DE /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F67890A1B2C3DF /* Libs */,
+				A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */,
+				A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */,
+				A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */,
+				B1C2D3E4F5A67890B1C2D3E1 /* MultiTerminalView.swift */,
+				B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */,
+				B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */,
+				B1C2D3E4F5A67890B1C2D3E7 /* ProcessMonitor.swift */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F67890A1B2C3DF /* Libs */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F67890A1B2C3DB /* libsugarloaf_ffi.a */,
+				A1B2C3D4E5F67890A1B2C3DC /* SugarloafBridge.h */,
+			);
+			path = Libs;
+			sourceTree = "<group>";
+		};
 		AC3F0C31625613FF44C2C0FF /* App */ = {
 			isa = PBXGroup;
 			children = (
+				48D9E3282F31D89C001D7F5B /* SidebarView.swift */,
 				5FF090D41A7860ACA07F8D28 /* ContentView.swift */,
 				60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */,
 				34EB77C3FAEBAF47037A33F2 /* Theme.swift */,
@@ -94,30 +121,6 @@
 				8CA8CDAD97BF595FD7789E12 /* DevRunner.swift */,
 			);
 			path = FFI;
-			sourceTree = "<group>";
-		};
-		A1B2C3D4E5F67890A1B2C3DE /* Terminal */ = {
-			isa = PBXGroup;
-			children = (
-				A1B2C3D4E5F67890A1B2C3DF /* Libs */,
-				A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */,
-				A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */,
-				A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */,
-				B1C2D3E4F5A67890B1C2D3E1 /* MultiTerminalView.swift */,
-				B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */,
-				B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */,
-				B1C2D3E4F5A67890B1C2D3E7 /* ProcessMonitor.swift */,
-			);
-			path = Terminal;
-			sourceTree = "<group>";
-		};
-		A1B2C3D4E5F67890A1B2C3DF /* Libs */ = {
-			isa = PBXGroup;
-			children = (
-				A1B2C3D4E5F67890A1B2C3DB /* libsugarloaf_ffi.a */,
-				A1B2C3D4E5F67890A1B2C3DC /* SugarloafBridge.h */,
-			);
-			path = Libs;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -167,7 +170,6 @@
 			);
 			mainGroup = 12FBAD607DB27521E5D3BA9C;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -208,6 +210,7 @@
 				E1D437814D1CD4A1624F9A1B /* DevRunnerApp.swift in Sources */,
 				64DA73E651A9C50C46905DE7 /* Theme.swift in Sources */,
 				A1B2C3D4E5F67890A1B2C3D4 /* SimpleTerminalPoolWrapper.swift in Sources */,
+				48D9E3292F31D89C001D7F5B /* SidebarView.swift in Sources */,
 				A1B2C3D4E5F67890A1B2C3D6 /* SimpleRenderScheduler.swift in Sources */,
 				A1B2C3D4E5F67890A1B2C3D8 /* SimpleTerminalView.swift in Sources */,
 				B1C2D3E4F5A67890B1C2D3E0 /* MultiTerminalView.swift in Sources */,

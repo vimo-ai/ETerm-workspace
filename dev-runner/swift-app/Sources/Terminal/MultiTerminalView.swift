@@ -42,14 +42,29 @@ class MultiTerminalController {
     weak var metalView: MultiTerminalMetalView?
     weak var tabManager: TerminalTabManager?
 
+    /// 获取终端池（用于向特定终端发送命令）
+    var terminalPool: SimpleTerminalPoolWrapper? {
+        metalView?.terminalPool
+    }
+
     /// 向当前选中的终端发送命令
     func sendCommand(_ command: String) {
         metalView?.sendCommand(command)
     }
 
+    /// 向指定终端发送命令
+    func sendCommand(_ command: String, to terminalId: Int) {
+        metalView?.terminalPool?.sendCommand(command, to: terminalId)
+    }
+
     /// 向当前选中的终端发送中断
     func sendInterrupt() {
         metalView?.sendInterrupt()
+    }
+
+    /// 向指定终端发送中断
+    func sendInterrupt(to terminalId: Int) {
+        metalView?.terminalPool?.sendInterrupt(to: terminalId)
     }
 
     /// 清屏
@@ -73,7 +88,7 @@ class MultiTerminalMetalView: NSView {
     var tabManager: TerminalTabManager?
     var onReady: ((MultiTerminalController) -> Void)?
 
-    private var terminalPool: SimpleTerminalPoolWrapper?
+    private(set) var terminalPool: SimpleTerminalPoolWrapper?
     private var renderScheduler: SimpleRenderScheduler?
     private let controller = MultiTerminalController()
     private var isInitialized = false

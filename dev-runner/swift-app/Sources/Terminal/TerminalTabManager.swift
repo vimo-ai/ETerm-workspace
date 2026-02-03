@@ -8,17 +8,68 @@
 import SwiftUI
 import Combine
 
+/// 任务类型
+enum TaskAction: String, Equatable {
+    case build
+    case run
+    case shell  // 普通 shell，无关联任务
+}
+
+/// 任务标识（用于查找已存在的 Tab）
+struct TaskKey: Hashable {
+    let projectPath: String
+    let action: TaskAction
+    let deviceId: String?
+    let deviceName: String?
+
+    // Hashable 只用 projectPath + action + deviceId
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(projectPath)
+        hasher.combine(action)
+        hasher.combine(deviceId)
+    }
+
+    static func == (lhs: TaskKey, rhs: TaskKey) -> Bool {
+        lhs.projectPath == rhs.projectPath &&
+        lhs.action == rhs.action &&
+        lhs.deviceId == rhs.deviceId
+    }
+
+    var displayName: String {
+        let projectName = URL(fileURLWithPath: projectPath).lastPathComponent
+        switch action {
+        case .shell:
+            return "zsh"
+        case .build:
+            return "\(projectName):Build"
+        case .run:
+            if let name = deviceName {
+                return "\(projectName):\(name)"
+            }
+            return "\(projectName):Run"
+        }
+    }
+}
+
 /// 单个终端 Tab
 struct TerminalTab: Identifiable, Equatable {
     let id: UUID
     let terminalId: Int          // TerminalPool 中的 ID
-    var title: String            // 显示名称（前台进程名）
+    var title: String            // 显示名称
     var isRunning: Bool = false  // 是否有子进程在跑
     var ports: [UInt16] = []     // 监听端口
+    var cpuPercent: Double = 0   // CPU 使用率 %
+    var memoryMB: Double = 0     // 内存占用 MB
+
+    // Task 关联
+    var taskKey: TaskKey?        // 关联的任务（nil 表示普通 shell）
 
     static func == (lhs: TerminalTab, rhs: TerminalTab) -> Bool {
         lhs.id == rhs.id && lhs.title == rhs.title &&
-        lhs.isRunning == rhs.isRunning && lhs.ports == rhs.ports
+        lhs.isRunning == rhs.isRunning && lhs.ports == rhs.ports &&
+        lhs.taskKey == rhs.taskKey &&
+        abs(lhs.cpuPercent - rhs.cpuPercent) < 0.1 &&
+        abs(lhs.memoryMB - rhs.memoryMB) < 0.1
     }
 }
 
@@ -54,7 +105,7 @@ class TerminalTabManager: ObservableObject {
 
     /// 创建新 Tab
     @discardableResult
-    func createTab(cwd: String, title: String? = nil) -> TerminalTab? {
+    func createTab(cwd: String, title: String? = nil, taskKey: TaskKey? = nil) -> TerminalTab? {
         guard let pool = pool else {
             print("[TabManager] createTab: no pool")
             return nil
@@ -69,15 +120,40 @@ class TerminalTabManager: ObservableObject {
         let tab = TerminalTab(
             id: UUID(),
             terminalId: terminalId,
-            title: title ?? "zsh"
+            title: title ?? taskKey?.displayName ?? "zsh",
+            taskKey: taskKey
         )
 
         tabs.append(tab)
         selectedTabId = tab.id
         monitor.registerTerminal(terminalId)
 
-        print("[TabManager] createTab: tab \(tab.id.uuidString.prefix(8)) terminalId=\(terminalId)")
+        print("[TabManager] createTab: tab \(tab.id.uuidString.prefix(8)) terminalId=\(terminalId) task=\(taskKey?.displayName ?? "shell")")
         return tab
+    }
+
+    /// 查找已存在的任务 Tab
+    func findTab(for taskKey: TaskKey) -> TerminalTab? {
+        tabs.first { $0.taskKey == taskKey }
+    }
+
+    /// 查找或创建任务 Tab
+    ///
+    /// - Returns: (tab, isNew, wasRunning)
+    @discardableResult
+    func findOrCreateTaskTab(cwd: String, taskKey: TaskKey) -> (tab: TerminalTab, isNew: Bool, wasRunning: Bool)? {
+        // 查找已存在的 Tab
+        if let existingTab = findTab(for: taskKey) {
+            let wasRunning = existingTab.isRunning
+            selectedTabId = existingTab.id
+            return (existingTab, false, wasRunning)
+        }
+
+        // 创建新 Tab
+        guard let newTab = createTab(cwd: cwd, title: taskKey.displayName, taskKey: taskKey) else {
+            return nil
+        }
+        return (newTab, true, false)
     }
 
     /// 关闭 Tab
@@ -129,10 +205,14 @@ class TerminalTabManager: ObservableObject {
         for i in tabs.indices {
             let terminalId = tabs[i].terminalId
 
-            if let name = pool.getForegroundProcessName(terminalId), !name.isEmpty {
-                if tabs[i].title != name {
-                    tabs[i].title = name
-                    needsUpdate = true
+            // 只有普通 shell tab 才更新进程名为标题
+            // 任务 tab 保持任务名（NewsLens:Build）
+            if tabs[i].taskKey == nil {
+                if let name = pool.getForegroundProcessName(terminalId), !name.isEmpty {
+                    if tabs[i].title != name {
+                        tabs[i].title = name
+                        needsUpdate = true
+                    }
                 }
             }
 
@@ -154,6 +234,14 @@ class TerminalTabManager: ObservableObject {
             if let info = infoMap[tabs[i].terminalId] {
                 if tabs[i].ports != info.listeningPorts {
                     tabs[i].ports = info.listeningPorts
+                    needsUpdate = true
+                }
+                if abs(tabs[i].cpuPercent - info.cpuPercent) >= 0.1 {
+                    tabs[i].cpuPercent = info.cpuPercent
+                    needsUpdate = true
+                }
+                if abs(tabs[i].memoryMB - info.memoryMB) >= 0.1 {
+                    tabs[i].memoryMB = info.memoryMB
                     needsUpdate = true
                 }
             }

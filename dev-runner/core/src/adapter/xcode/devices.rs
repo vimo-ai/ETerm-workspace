@@ -432,7 +432,7 @@ mod tests {
             ]
         }"#;
 
-        let devices = parse_simulators(json).unwrap();
+        let devices = parse_simulators(json, Platform::IOS).unwrap();
         assert_eq!(devices.len(), 2);
 
         // Check first device
@@ -442,9 +442,9 @@ mod tests {
         assert_eq!(iphone15.os_version, Some("17.0".to_string()));
         assert_eq!(iphone15.state, DeviceState::Available);
 
-        // Check second device
+        // Check second device (Shutdown state = Available for use)
         let iphone15pro = devices.iter().find(|d| d.name == "iPhone 15 Pro").unwrap();
-        assert_eq!(iphone15pro.state, DeviceState::Unavailable);
+        assert_eq!(iphone15pro.state, DeviceState::Available);
     }
 
     #[test]
@@ -463,7 +463,7 @@ mod tests {
             "runtimes": []
         }"#;
 
-        let devices = parse_simulators(json).unwrap();
+        let devices = parse_simulators(json, Platform::IOS).unwrap();
         assert!(devices.is_empty());
     }
 
@@ -483,7 +483,7 @@ mod tests {
             "runtimes": []
         }"#;
 
-        let devices = parse_simulators(json).unwrap();
+        let devices = parse_simulators(json, Platform::IOS).unwrap();
         assert!(devices.is_empty());
     }
 
@@ -526,7 +526,7 @@ mod tests {
             ]
         }"#;
 
-        let devices = parse_simulators(json).unwrap();
+        let devices = parse_simulators(json, Platform::IOS).unwrap();
         assert_eq!(devices.len(), 2);
 
         // Should be sorted by version descending
@@ -560,7 +560,7 @@ mod tests {
             }
         }"#;
 
-        let devices = parse_physical_devices(json).unwrap();
+        let devices = parse_physical_devices(json, Platform::IOS).unwrap();
         assert_eq!(devices.len(), 1);
 
         let device = &devices[0];
@@ -594,7 +594,7 @@ mod tests {
             }
         }"#;
 
-        let devices = parse_physical_devices(json).unwrap();
+        let devices = parse_physical_devices(json, Platform::IOS).unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].state, DeviceState::Unavailable);
     }
@@ -636,7 +636,7 @@ mod tests {
             }
         }"#;
 
-        let devices = parse_physical_devices(json).unwrap();
+        let devices = parse_physical_devices(json, Platform::IOS).unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].name, "My iPhone");
     }
@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn test_parse_physical_devices_empty() {
         let json = r#"{"result": {"devices": []}}"#;
-        let devices = parse_physical_devices(json).unwrap();
+        let devices = parse_physical_devices(json, Platform::IOS).unwrap();
         assert!(devices.is_empty());
     }
 
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_fetch_simulators_real() {
-        let devices = super::fetch_simulators();
+        let devices = fetch_simulators(Platform::IOS);
         println!("Found {} simulators", devices.len());
         for device in devices.iter().take(5) {
             println!(
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_fetch_physical_devices_real() {
-        let devices = super::fetch_physical_devices();
+        let devices = fetch_physical_devices(Platform::IOS);
         println!("Found {} physical devices", devices.len());
         for device in &devices {
             println!(

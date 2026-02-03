@@ -12,6 +12,9 @@ struct TerminalProcessInfo: Equatable {
     var processName: String = ""
     var isRunning: Bool = false
     var listeningPorts: [UInt16] = []
+    var cpuPercent: Double = 0      // CPU 使用率 %
+    var memoryMB: Double = 0        // 内存占用 MB
+    var pid: Int32 = 0              // 进程 PID
 }
 
 /// 进程监控器
@@ -74,7 +77,9 @@ class ProcessMonitor {
 
         // 获取当前所有监听端口（进程名 → 端口集合）
         let portMap = detectAllListeningPorts()
-        let allCurrentPorts = Set(portMap.values.flatMap { $0 })
+
+        // 获取进程资源使用（进程名小写 → (cpu, mem, pid)）
+        let resourceMap = detectProcessResources()
 
         var updated = false
         for (terminalId, oldInfo) in processInfoCache {
@@ -87,6 +92,16 @@ class ProcessMonitor {
 
             // 运行状态
             newInfo.isRunning = pool.hasRunningProcess(terminalId)
+
+            // CPU/内存（通过进程名匹配）
+            if !newInfo.processName.isEmpty {
+                let key = newInfo.processName.lowercased()
+                if let resource = resourceMap[key] {
+                    newInfo.cpuPercent = resource.cpu
+                    newInfo.memoryMB = resource.mem
+                    newInfo.pid = resource.pid
+                }
+            }
 
             // 端口检测 - 只显示基线后新增且属于当前进程的端口
             if !newInfo.processName.isEmpty, let baseline = portBaseline[terminalId] {
@@ -109,6 +124,34 @@ class ProcessMonitor {
                 self.onUpdate?(self.processInfoCache)
             }
         }
+    }
+
+    // MARK: - Resource Detection
+
+    /// 获取进程资源使用: [进程名小写: (cpu, mem, pid)]
+    private func detectProcessResources() -> [String: (cpu: Double, mem: Double, pid: Int32)] {
+        // ps -eo pid,comm,%cpu,rss (rss 是 KB)
+        let output = runCommand("/bin/ps", args: ["-eo", "pid,comm,%cpu,rss"])
+        guard !output.isEmpty else { return [:] }
+
+        var result: [String: (cpu: Double, mem: Double, pid: Int32)] = [:]
+
+        for line in output.split(separator: "\n").dropFirst() {  // skip header
+            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard fields.count >= 4 else { continue }
+
+            if let pid = Int32(fields[0]),
+               let cpu = Double(fields[2]),
+               let rssKB = Double(fields[3]) {
+                let comm = String(fields[1]).lowercased()
+                // 取最大 CPU 的那个（同名进程可能有多个）
+                if result[comm] == nil || cpu > result[comm]!.cpu {
+                    result[comm] = (cpu: cpu, mem: rssKB / 1024.0, pid: pid)
+                }
+            }
+        }
+
+        return result
     }
 
     // MARK: - Port Detection

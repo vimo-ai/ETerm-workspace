@@ -57,6 +57,16 @@ private struct TabItem: View {
 
     @State private var isHovered = false
 
+    private func formatMemory(_ mb: Double) -> String {
+        if mb >= 1024 {
+            return String(format: "%.1fG", mb / 1024)
+        } else if mb >= 100 {
+            return String(format: "%.0fM", mb)
+        } else {
+            return String(format: "%.1fM", mb)
+        }
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             // Status indicator
@@ -69,6 +79,28 @@ private struct TabItem: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
                 .lineLimit(1)
+
+            // Resource info (only when running)
+            if tab.isRunning && (tab.cpuPercent > 0.1 || tab.memoryMB > 0.1) {
+                HStack(spacing: 4) {
+                    // CPU
+                    if tab.cpuPercent > 0.1 {
+                        Text(String(format: "%.0f%%", tab.cpuPercent))
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(tab.cpuPercent > 50 ? Theme.warning : Theme.textMuted)
+                    }
+                    // Memory
+                    if tab.memoryMB > 0.1 {
+                        Text(formatMemory(tab.memoryMB))
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(Theme.textMuted)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Theme.bgPrimary.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
 
             // Port badge (compact: show first port only)
             if let port = tab.ports.first {
