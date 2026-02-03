@@ -1,6 +1,19 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// 项目树节点
+enum ProjectTreeNode: Identifiable {
+    case folder(name: String, path: String, children: [ProjectTreeNode])
+    case project(ProjectInfo)
+
+    var id: String {
+        switch self {
+        case .folder(_, let path, _): return "folder:\(path)"
+        case .project(let p): return "project:\(p.path)"
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var runner: DevRunner
     @State private var isBuilding = false
@@ -8,7 +21,9 @@ struct ContentView: View {
     @State private var terminalController: MultiTerminalController?
     @StateObject private var tabManager = TerminalTabManager()
     @State private var isDraggingOver = false  // 拖拽状态
-    @State private var collapsedGroups: Set<String> = []  // 折叠的分组
+    @State private var expandedWorkspaces: Set<UUID> = []  // 展开的 workspace
+    @State private var collapsedGroups: Set<String> = []  // 折叠的路径分组
+    @State private var expandedFolders: Set<String> = []  // 展开的文件夹路径
 
     var body: some View {
         HStack(spacing: 0) {
@@ -22,7 +37,7 @@ struct ContentView: View {
                 .frame(width: 1)
 
             // Main content
-            if runner.selectedWorkspace != nil {
+            if runner.selectedProject != nil {
                 mainContent
             } else {
                 emptyState
@@ -39,64 +54,313 @@ struct ContentView: View {
 
     // MARK: - Computed Properties
 
-    /// 按顶层目录分组的 workspaces
-    /// 逻辑：取 ~/Desktop/ 或 ~/Documents/ 等下的第一层目录作为分组
-    /// 例如：~/Desktop/vimo/ETerm 和 ~/Desktop/vimo/calendar 都归到 ~/Desktop/vimo
+    /// 按路径前缀分组的 workspaces（三层结构：路径组 → Workspace → Project）
     private var groupedWorkspaces: [(id: String, groupName: String?, workspaces: [Workspace])] {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
 
-        // 计算每个 workspace 的分组 key
-        // 规则：home 之后取前两级目录作为分组（如 Desktop/vimo）
-        // 如果路径只有两级或更少，则不分组
+        // 按 ~/Desktop/xxx 这一级分组
         let grouped = Dictionary(grouping: runner.workspaces) { workspace -> String in
             let path = workspace.path
-
-            // 去掉 home 前缀，得到相对路径
-            guard path.hasPrefix(homeDir) else {
-                return "__root__"  // 不在 home 下的路径
-            }
+            guard path.hasPrefix(homeDir) else { return "__root__" }
 
             let relativePath = String(path.dropFirst(homeDir.count))
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let components = relativePath.split(separator: "/").map(String.init)
 
-            // 至少需要 3 级才分组（如 Desktop/vimo/ETerm）
             // 取前两级作为分组 key（如 Desktop/vimo）
             if components.count >= 3 {
                 return "\(homeDir)/\(components[0])/\(components[1])"
             } else {
-                // 直接在 ~/Desktop/ 下的项目，不分组
                 return "__standalone__\(path)"
             }
         }
 
-        // 转换为数组
         var result: [(id: String, groupName: String?, workspaces: [Workspace])] = []
-
         for (groupKey, workspaces) in grouped {
             if groupKey.hasPrefix("__standalone__") || groupKey == "__root__" {
-                // 单独的 workspace：不显示组头
                 result.append((id: groupKey, groupName: nil, workspaces: workspaces))
             } else {
-                // 有分组：显示分组头，缩短路径（home 替换为 ~）
                 let displayPath = groupKey.replacingOccurrences(of: homeDir, with: "~")
                 result.append((id: groupKey, groupName: displayPath, workspaces: workspaces))
             }
         }
 
-        // 排序：有 groupName 的在前，nil 的在后；同类按 groupName 排序
+        // 排序：有 groupName 的在前
         return result.sorted { lhs, rhs in
             switch (lhs.groupName, rhs.groupName) {
-            case (nil, nil):
-                return lhs.id < rhs.id
-            case (nil, _):
-                return false
-            case (_, nil):
-                return true
-            case let (l?, r?):
-                return l < r
+            case (nil, nil): return lhs.id < rhs.id
+            case (nil, _): return false
+            case (_, nil): return true
+            case let (l?, r?): return l < r
             }
         }
+    }
+
+    // MARK: - Helper Methods
+
+    /// 切换路径分组展开/折叠
+    private func toggleGroupCollapse(_ groupId: String) {
+        if collapsedGroups.contains(groupId) {
+            collapsedGroups.remove(groupId)
+        } else {
+            collapsedGroups.insert(groupId)
+        }
+    }
+
+    /// 切换 workspace 展开/折叠
+    private func toggleWorkspaceExpansion(_ id: UUID) {
+        if expandedWorkspaces.contains(id) {
+            expandedWorkspaces.remove(id)
+        } else {
+            expandedWorkspaces.insert(id)
+        }
+    }
+
+    /// 切换文件夹展开/折叠
+    private func toggleFolder(_ folderPath: String) {
+        if expandedFolders.contains(folderPath) {
+            expandedFolders.remove(folderPath)
+        } else {
+            expandedFolders.insert(folderPath)
+        }
+    }
+
+    /// 将 projects 按相对路径构建成树
+    private func buildProjectTree(workspace: Workspace) -> [ProjectTreeNode] {
+        let workspacePath = workspace.path
+
+        // 构建临时树结构 [path: children]
+        var tree: [String: [ProjectTreeNode]] = [:]
+
+        for project in workspace.projects {
+            // 计算相对路径
+            let relativePath = project.path
+                .replacingOccurrences(of: workspacePath, with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+            let components = relativePath.split(separator: "/").map(String.init)
+
+            // 如果只有一层（根目录项目），直接加到根层级
+            if components.count == 1 {
+                tree["", default: []].append(.project(project))
+                continue
+            }
+
+            // 多层结构：构建中间文件夹
+            // 例如 "dev-runner/DevRunner" → folder: dev-runner, project: DevRunner
+            let folderComponents = Array(components.dropLast())
+            var currentPath = ""
+
+            for (index, component) in folderComponents.enumerated() {
+                let parentPath = currentPath
+                currentPath = currentPath.isEmpty ? component : "\(currentPath)/\(component)"
+
+                // 如果是最后一个文件夹，添加项目
+                if index == folderComponents.count - 1 {
+                    tree[currentPath, default: []].append(.project(project))
+                }
+            }
+        }
+
+        // 递归构建树节点
+        func buildNodes(at path: String) -> [ProjectTreeNode] {
+            guard let children = tree[path] else { return [] }
+
+            var nodes: [ProjectTreeNode] = []
+
+            // 收集所有子文件夹
+            let childFolders = tree.keys.filter { key in
+                guard !key.isEmpty else { return false }
+                let parentPath = (key as NSString).deletingLastPathComponent
+                return path.isEmpty ? !parentPath.contains("/") : parentPath == path
+            }
+
+            // 添加文件夹节点
+            for folderPath in childFolders.sorted() {
+                let folderName = (folderPath as NSString).lastPathComponent
+                let folderChildren = buildNodes(at: folderPath)
+                nodes.append(.folder(name: folderName, path: folderPath, children: folderChildren))
+            }
+
+            // 添加当前路径下的项目节点
+            nodes.append(contentsOf: children)
+
+            return nodes
+        }
+
+        return buildNodes(at: "")
+    }
+
+    // MARK: - Sidebar Row Views
+
+    /// Workspace 行
+    @ViewBuilder
+    private func workspaceRow(workspace: Workspace, indented: Bool) -> some View {
+        Button {
+            toggleWorkspaceExpansion(workspace.id)
+        } label: {
+            HStack(spacing: 6) {
+                // 折叠箭头
+                Image(systemName: expandedWorkspaces.contains(workspace.id) ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9))
+                    .foregroundColor(Theme.textMuted)
+                    .frame(width: 12)
+
+                // 文件夹图标
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.accent)
+
+                // Workspace 名称
+                Text(workspace.name)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(Theme.textPrimary)
+
+                Spacer()
+
+                // 项目数量 badge
+                if workspace.projects.count > 1 {
+                    Text("\(workspace.projects.count)")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(Theme.textMuted)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Theme.bgPrimary.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+            }
+            .padding(.leading, indented ? 20 : 12)
+            .padding(.trailing, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Project 行
+    @ViewBuilder
+    private func projectRow(project: ProjectInfo, indented: Bool) -> some View {
+        let isSelected = runner.selectedProject?.path == project.path
+
+        Button {
+            runner.selectProject(project)
+        } label: {
+            HStack(spacing: 6) {
+                // 类型图标
+                Image(systemName: project.adapterType == "xcode" ? "hammer.fill" : "cube.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
+
+                // 项目名
+                Text(project.name)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                    .lineLimit(1)
+
+                Spacer()
+
+                // 类型 badge
+                Text(project.adapterType == "xcode" ? "Xcode" : "Node")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background((project.adapterType == "xcode" ? Theme.xcode : Theme.node).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .padding(.leading, indented ? 36 : 28)
+            .padding(.trailing, 12)
+            .padding(.vertical, 5)
+            .background(isSelected ? Theme.bgHover : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Project 行（带深度参数）
+    @ViewBuilder
+    private func projectRowWithDepth(project: ProjectInfo, depth: Int, groupIndented: Bool) -> some View {
+        let isSelected = runner.selectedProject?.path == project.path
+        let baseIndent: CGFloat = groupIndented ? 36 : 28
+        let depthIndent: CGFloat = CGFloat(depth * 12)
+
+        Button {
+            runner.selectProject(project)
+        } label: {
+            HStack(spacing: 6) {
+                // 类型图标
+                Image(systemName: project.adapterType == "xcode" ? "hammer.fill" : "cube.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
+
+                // 项目名
+                Text(project.name)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                    .lineLimit(1)
+
+                Spacer()
+
+                // 类型 badge
+                Text(project.adapterType == "xcode" ? "Xcode" : "Node")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background((project.adapterType == "xcode" ? Theme.xcode : Theme.node).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .padding(.leading, baseIndent + depthIndent)
+            .padding(.trailing, 12)
+            .padding(.vertical, 5)
+            .background(isSelected ? Theme.bgHover : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 递归渲染项目树（使用 AnyView 解决递归类型问题）
+    private func renderProjectTree(nodes: [ProjectTreeNode], depth: Int, groupIndented: Bool) -> AnyView {
+        AnyView(
+            ForEach(nodes) { node in
+                switch node {
+                case .folder(let name, let path, let children):
+                    VStack(spacing: 0) {
+                        // 文件夹行
+                        Button {
+                            toggleFolder(path)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: expandedFolders.contains(path) ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 8))
+                                    .foregroundColor(Theme.textMuted)
+                                Image(systemName: "folder")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.textMuted)
+                                Text(name)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(Theme.textMuted)
+                                Spacer()
+                            }
+                            .padding(.leading, CGFloat(depth * 12) + (groupIndented ? 36 : 28))
+                            .padding(.trailing, 12)
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        // 子节点（展开时）
+                        if expandedFolders.contains(path) {
+                            renderProjectTree(nodes: children, depth: depth + 1, groupIndented: groupIndented)
+                        }
+                    }
+
+                case .project(let project):
+                    // 项目行
+                    projectRowWithDepth(project: project, depth: depth, groupIndented: groupIndented)
+                }
+            }
+        )
     }
 
     // MARK: - Sidebar
@@ -105,7 +369,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("WORKSPACES")
+                Text("PROJECTS")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(Theme.textMuted)
                     .tracking(1.5)
@@ -115,32 +379,23 @@ struct ContentView: View {
             .padding(.top, 20)
             .padding(.bottom, 12)
 
-            // Workspace list
+            // 路径分组 → Workspace → Project 三层树形列表
             ScrollView {
-                VStack(spacing: 4) {
+                VStack(spacing: 2) {
                     ForEach(groupedWorkspaces, id: \.id) { group in
-                        // 分组头（如果有）
+                        // 路径分组头（如果有）
                         if let groupName = group.groupName {
                             Button {
-                                // 切换折叠状态
-                                if collapsedGroups.contains(group.id) {
-                                    collapsedGroups.remove(group.id)
-                                } else {
-                                    collapsedGroups.insert(group.id)
-                                }
+                                toggleGroupCollapse(group.id)
                             } label: {
                                 HStack(spacing: 6) {
-                                    // 折叠小三角
                                     Image(systemName: collapsedGroups.contains(group.id) ? "chevron.right" : "chevron.down")
                                         .font(.system(size: 9, weight: .semibold))
                                         .foregroundColor(Theme.textMuted)
                                         .frame(width: 12)
-
-                                    // 路径文字
                                     Text(groupName)
                                         .font(.system(size: 10, design: .monospaced))
                                         .foregroundColor(Theme.textMuted)
-
                                     Spacer()
                                 }
                                 .padding(.horizontal, 12)
@@ -150,20 +405,23 @@ struct ContentView: View {
                             .buttonStyle(.plain)
                         }
 
-                        // Workspace 列表（展开时）
+                        // 分组内的 Workspaces（未折叠时显示）
                         if group.groupName == nil || !collapsedGroups.contains(group.id) {
                             ForEach(group.workspaces) { workspace in
-                                SciFiSidebarItem(
-                                    name: workspace.name,
-                                    isSelected: runner.selectedWorkspace?.id == workspace.id,
-                                    onSelect: { runner.selectWorkspace(workspace) },
-                                    onRemove: { runner.removeWorkspace(workspace) }
-                                )
+                                // Workspace 行
+                                workspaceRow(workspace: workspace, indented: group.groupName != nil)
+
+                                // 展开时显示 Projects（使用树形结构）
+                                if expandedWorkspaces.contains(workspace.id) {
+                                    let tree = buildProjectTree(workspace: workspace)
+                                    renderProjectTree(nodes: tree, depth: 0, groupIndented: group.groupName != nil)
+                                }
                             }
                         }
                     }
                 }
                 .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
 
             Spacer()
@@ -207,36 +465,38 @@ struct ContentView: View {
 
     private var emptyState: some View {
         VStack(spacing: 20) {
-            Image(systemName: "cube.transparent")
+            Image(systemName: runner.workspaces.isEmpty ? "cube.transparent" : "arrow.left")
                 .font(.system(size: 48, weight: .thin))
                 .foregroundColor(Theme.accent.opacity(0.5))
 
             VStack(spacing: 8) {
-                Text("NO WORKSPACE")
+                Text(runner.workspaces.isEmpty ? "NO WORKSPACE" : "NO PROJECT SELECTED")
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
                     .foregroundColor(Theme.textPrimary)
                     .tracking(2)
 
-                Text("Add a workspace to begin")
+                Text(runner.workspaces.isEmpty ? "Add a workspace to begin" : "Select a project from the sidebar")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(Theme.textSecondary)
             }
 
-            Button {
-                addWorkspace()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus")
-                    Text("Add Workspace")
+            if runner.workspaces.isEmpty {
+                Button {
+                    addWorkspace()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                        Text("Add Workspace")
+                    }
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Theme.bgPrimary)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Theme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundColor(Theme.bgPrimary)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-                .background(Theme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bgPrimary)
@@ -268,15 +528,27 @@ struct ContentView: View {
 
     private var headerBar: some View {
         HStack(spacing: 16) {
-            // Workspace name
-            if let ws = runner.selectedWorkspace {
+            // 当前选中的 Project 信息
+            if let project = runner.selectedProject {
                 HStack(spacing: 8) {
-                    Image(systemName: "cube.fill")
+                    // 项目类型图标
+                    Image(systemName: project.adapterType == "xcode" ? "hammer.fill" : "cube.fill")
                         .font(.system(size: 14))
-                        .foregroundColor(Theme.accent)
-                    Text(ws.name)
+                        .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
+
+                    // 项目名称
+                    Text(project.name)
                         .font(.system(size: 16, weight: .semibold, design: .monospaced))
                         .foregroundColor(Theme.textPrimary)
+
+                    // 类型 badge
+                    Text(project.adapterType == "xcode" ? "Xcode" : "Node")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(project.adapterType == "xcode" ? Theme.xcode : Theme.node)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background((project.adapterType == "xcode" ? Theme.xcode : Theme.node).opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
             }
 
@@ -330,27 +602,6 @@ struct ContentView: View {
 
     private var selectorsBar: some View {
         HStack(spacing: 16) {
-            // Project - with type badge
-            SciFiPicker(
-                "Project",
-                icon: "folder.fill",
-                selection: Binding(
-                    get: { runner.selectedProject },
-                    set: { if let p = $0 { runner.selectProject(p) } }
-                ),
-                options: runner.selectedWorkspace?.projects ?? [],
-                optionLabel: { $0.name },
-                optionIcon: { $0.adapterType == "xcode" ? "hammer.fill" : "terminal.fill" },
-                optionBadge: { project in
-                    if project.adapterType == "xcode" {
-                        return ("Xcode", Theme.xcode)
-                    } else {
-                        return ("Node", Theme.node)
-                    }
-                }
-            )
-            .frame(width: 240)
-
             // Target - with type badge
             SciFiPicker(
                 "Target",
@@ -409,7 +660,7 @@ struct ContentView: View {
 
             // Terminal View
             MultiTerminalView(
-                workingDirectory: runner.selectedWorkspace?.path ?? FileManager.default.currentDirectoryPath,
+                workingDirectory: runner.selectedProject?.path ?? FileManager.default.currentDirectoryPath,
                 tabManager: tabManager
             ) { controller in
                 print("[ContentView] terminalArea: onReady called")

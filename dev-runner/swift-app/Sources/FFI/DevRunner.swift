@@ -313,23 +313,99 @@ final class DevRunner: ObservableObject {
         }
     }
 
-    /// Select a project
+    /// Select a project（异步加载，不阻塞 UI）
     func selectProject(_ project: ProjectInfo) {
         selectedProject = project
 
-        // Open and load targets/devices
-        _ = try? openProjectInternal(path: project.path)
-        targets = (try? listTargets(projectPath: project.path)) ?? []
-        devices = (try? listDevices(projectPath: project.path)) ?? []
+        // 先清空，显示 loading 状态
+        targets = []
+        devices = []
+        selectedTarget = nil
+        selectedDevice = nil
 
-        // Smart auto-select target: prefer App > first
-        selectedTarget = targets.first(where: { $0.targetType.lowercased().contains("app") })
-            ?? targets.first
+        let projectPath = project.path
+        let handleCopy = handle  // 捕获 handle
 
-        // Smart auto-select device: prefer Mac > Simulator > Physical
-        selectedDevice = devices.first(where: { $0.isMac && $0.isAvailable })
-            ?? devices.first(where: { $0.isSimulator && $0.isAvailable })
-            ?? devices.first(where: { $0.isAvailable })
+        // 后台加载 targets 和 devices
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // 先 open 项目（必须在 list 之前）
+            Self.openProjectSync(handle: handleCopy, projectPath: projectPath)
+
+            // FFI 调用（在后台线程）
+            let loadedTargets = Self.listTargetsSync(handle: handleCopy, projectPath: projectPath)
+            let loadedDevices = Self.listDevicesSync(handle: handleCopy, projectPath: projectPath)
+
+            // 回到主线程更新 UI
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard self.selectedProject?.path == projectPath else { return }  // 防止切换后覆盖
+
+                self.targets = loadedTargets
+                self.devices = loadedDevices
+
+                // Smart auto-select target: prefer App > first
+                self.selectedTarget = loadedTargets.first(where: { $0.targetType.lowercased().contains("app") })
+                    ?? loadedTargets.first
+
+                // Smart auto-select device: prefer Mac > Simulator > Physical
+                self.selectedDevice = loadedDevices.first(where: { $0.isMac && $0.isAvailable })
+                    ?? loadedDevices.first(where: { $0.isSimulator && $0.isAvailable })
+                    ?? loadedDevices.first(where: { $0.isAvailable })
+            }
+        }
+    }
+
+    /// 同步版本的 openProject（静态方法，用于后台线程）
+    private static func openProjectSync(handle: OpaquePointer?, projectPath: String) {
+        guard let handle = handle else { return }
+        var errorPtr: UnsafeMutablePointer<CChar>?
+        let resultPtr = projectPath.withCString { pathPtr in
+            dev_runner_open(handle, pathPtr, &errorPtr)
+        }
+        if let resultPtr = resultPtr {
+            dev_runner_free_string(resultPtr)
+        }
+        errorPtr.map { dev_runner_free_string($0) }
+    }
+
+    /// 同步版本的 listTargets（静态方法，用于后台线程）
+    private static func listTargetsSync(handle: OpaquePointer?, projectPath: String) -> [TargetInfo] {
+        guard let handle = handle else { return [] }
+        var errorPtr: UnsafeMutablePointer<CChar>?
+        guard let resultPtr = projectPath.withCString({ pathPtr in
+            dev_runner_list_targets(handle, pathPtr, &errorPtr)
+        }) else {
+            errorPtr.map { dev_runner_free_string($0) }
+            return []
+        }
+        let json = String(cString: resultPtr)
+        dev_runner_free_string(resultPtr)
+
+        guard let data = json.data(using: .utf8),
+              let targets = try? JSONDecoder().decode([TargetInfo].self, from: data) else {
+            return []
+        }
+        return targets
+    }
+
+    /// 同步版本的 listDevices（静态方法，用于后台线程）
+    private static func listDevicesSync(handle: OpaquePointer?, projectPath: String) -> [DeviceInfo] {
+        guard let handle = handle else { return [] }
+        var errorPtr: UnsafeMutablePointer<CChar>?
+        guard let resultPtr = projectPath.withCString({ pathPtr in
+            dev_runner_list_devices(handle, pathPtr, &errorPtr)
+        }) else {
+            errorPtr.map { dev_runner_free_string($0) }
+            return []
+        }
+        let json = String(cString: resultPtr)
+        dev_runner_free_string(resultPtr)
+
+        guard let data = json.data(using: .utf8),
+              let devices = try? JSONDecoder().decode([DeviceInfo].self, from: data) else {
+            return []
+        }
+        return devices
     }
 
     // MARK: - Project Detection
