@@ -94,6 +94,22 @@ class MultiTerminalMetalView: NSView {
     private var isInitialized = false
     private var lastLayoutHash: Int = 0
 
+    // MARK: - Selection State
+
+    /// 是否正在拖拽选中
+    private var isDraggingSelection = false
+
+    /// mouseDown 时快照的 terminalId（避免 tab 切换导致坐标错位）
+    private var selectionTerminalId: Int?
+
+    /// 选中起点（绝对行号）
+    private var selectionStartRow: Int64 = 0
+    private var selectionStartCol: Int = 0
+
+    /// 缓存的字体度量（逻辑像素）
+    private var cachedCellWidth: CGFloat = 0
+    private var cachedLineHeight: CGFloat = 0
+
     // MARK: - Initialization
 
     override init(frame frameRect: NSRect) {
@@ -149,6 +165,7 @@ class MultiTerminalMetalView: NSView {
         if abs(newScale - currentScale) > 0.01 {
             layer?.contentsScale = newScale
             terminalPool?.setScale(Float(newScale))
+            updateFontMetrics()
             needsLayout = true
         }
     }
@@ -194,6 +211,9 @@ class MultiTerminalMetalView: NSView {
 
         // 同步布局
         syncLayout()
+
+        // 缓存字体度量
+        updateFontMetrics()
 
         // 通知就绪
         onReady?(controller)
@@ -260,6 +280,249 @@ class MultiTerminalMetalView: NSView {
         pool.sendInterrupt(to: terminalId)
     }
 
+    // MARK: - First Responder
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // MARK: - Coordinate Conversion
+
+    /// 更新缓存的字体度量
+    private func updateFontMetrics() {
+        guard let pool = terminalPool,
+              let metrics = pool.getFontMetrics() else { return }
+        let scale = window?.screen?.backingScaleFactor ?? window?.backingScaleFactor ?? 2.0
+        cachedCellWidth = CGFloat(metrics.cellWidth) / scale
+        cachedLineHeight = CGFloat(metrics.lineHeight) / scale
+    }
+
+    /// 屏幕坐标转网格坐标
+    private func screenToGrid(location: CGPoint) -> (col: Int, row: Int) {
+        guard cachedCellWidth > 0, cachedLineHeight > 0 else {
+            return (0, 0)
+        }
+
+        let yFromTop = bounds.height - location.y
+        let col = max(0, Int(location.x / cachedCellWidth))
+        let row = max(0, Int(yFromTop / cachedLineHeight))
+        return (col, row)
+    }
+
+    // MARK: - Mouse Events
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+
+        guard let pool = terminalPool,
+              let terminalId = tabManager?.selectedTerminalId,
+              terminalId >= 0 else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let location = convert(event.locationInWindow, from: nil)
+        let grid = screenToGrid(location: location)
+
+        // 鼠标追踪模式（vim, tmux 等）
+        if pool.hasMouseTrackingMode(terminalId: terminalId) {
+            let button: UInt8
+            switch event.buttonNumber {
+            case 0: button = 0
+            case 1: button = 2
+            case 2: button = 1
+            default: return
+            }
+            _ = pool.sendMouseSGR(
+                terminalId: terminalId,
+                button: button,
+                col: UInt16(grid.col + 1),
+                row: UInt16(grid.row + 1),
+                pressed: true
+            )
+            return
+        }
+
+        // 单击时先清除旧选区
+        pool.clearSelection(terminalId: terminalId)
+
+        guard let (absoluteRow, col) = pool.screenToAbsolute(
+            terminalId: terminalId,
+            screenRow: grid.row,
+            screenCol: grid.col
+        ) else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        // 快照 terminalId（避免 tab 切换导致坐标错位）
+        selectionTerminalId = terminalId
+        selectionStartRow = absoluteRow
+        selectionStartCol = col
+
+        pool.setSelection(
+            terminalId: terminalId,
+            startAbsoluteRow: absoluteRow,
+            startCol: col,
+            endAbsoluteRow: absoluteRow,
+            endCol: col
+        )
+
+        renderScheduler?.requestRender()
+        isDraggingSelection = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // 使用 mouseDown 时快照的 terminalId
+        guard isDraggingSelection,
+              let terminalId = selectionTerminalId,
+              let pool = terminalPool else {
+            super.mouseDragged(with: event)
+            return
+        }
+
+        let location = convert(event.locationInWindow, from: nil)
+        let grid = screenToGrid(location: location)
+
+        guard let (absoluteRow, col) = pool.screenToAbsolute(
+            terminalId: terminalId,
+            screenRow: grid.row,
+            screenCol: grid.col
+        ) else {
+            return
+        }
+
+        pool.setSelection(
+            terminalId: terminalId,
+            startAbsoluteRow: selectionStartRow,
+            startCol: selectionStartCol,
+            endAbsoluteRow: absoluteRow,
+            endCol: col
+        )
+
+        renderScheduler?.requestRender()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // 鼠标追踪模式：发送 release
+        if let pool = terminalPool,
+           let terminalId = tabManager?.selectedTerminalId,
+           terminalId >= 0,
+           pool.hasMouseTrackingMode(terminalId: terminalId) {
+            let location = convert(event.locationInWindow, from: nil)
+            let grid = screenToGrid(location: location)
+            let button: UInt8
+            switch event.buttonNumber {
+            case 0: button = 0
+            case 1: button = 2
+            case 2: button = 1
+            default: return
+            }
+            _ = pool.sendMouseSGR(
+                terminalId: terminalId,
+                button: button,
+                col: UInt16(grid.col + 1),
+                row: UInt16(grid.row + 1),
+                pressed: false
+            )
+            return
+        }
+
+        guard isDraggingSelection,
+              let terminalId = selectionTerminalId,
+              let pool = terminalPool else {
+            super.mouseUp(with: event)
+            return
+        }
+
+        _ = pool.finalizeSelection(terminalId: terminalId)
+        renderScheduler?.requestRender()
+        isDraggingSelection = false
+        // 不清除 selectionTerminalId，保留给 Cmd+C
+    }
+
+    // MARK: - Keyboard Events
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags
+
+        // Cmd+C 复制
+        if flags.contains(.command), event.charactersIgnoringModifiers == "c" {
+            // 优先使用快照的 terminalId（选区所在终端），否则用当前选中
+            let terminalId = selectionTerminalId ?? tabManager?.selectedTerminalId
+            if let terminalId = terminalId,
+               let pool = terminalPool,
+               let text = pool.getSelectionText(terminalId: terminalId) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                return
+            }
+            super.keyDown(with: event)
+            return
+        }
+
+        // Cmd+V 粘贴
+        if flags.contains(.command), event.charactersIgnoringModifiers == "v" {
+            if let text = NSPasteboard.general.string(forType: .string),
+               let terminalId = tabManager?.selectedTerminalId,
+               let pool = terminalPool {
+                if pool.isBracketedPasteEnabled(terminalId: terminalId) {
+                    let wrapped = "\u{1B}[200~" + text + "\u{1B}[201~"
+                    pool.writeInput(terminalId: terminalId, data: wrapped)
+                } else {
+                    pool.writeInput(terminalId: terminalId, data: text)
+                }
+            }
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    // MARK: - Context Menu
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        menu.allowsContextMenuPlugIns = false
+
+        let terminalId = selectionTerminalId ?? tabManager?.selectedTerminalId
+        guard let terminalId = terminalId,
+              let pool = terminalPool else {
+            menu.addItem(withTitle: "粘贴", action: #selector(pasteFromClipboard(_:)), keyEquivalent: "v")
+            return menu
+        }
+
+        if let text = pool.getSelectionText(terminalId: terminalId),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            menu.addItem(withTitle: "复制", action: #selector(copySelection(_:)), keyEquivalent: "c")
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        menu.addItem(withTitle: "粘贴", action: #selector(pasteFromClipboard(_:)), keyEquivalent: "v")
+        return menu
+    }
+
+    @objc private func copySelection(_ sender: Any?) {
+        let terminalId = selectionTerminalId ?? tabManager?.selectedTerminalId
+        guard let terminalId = terminalId,
+              let pool = terminalPool,
+              let text = pool.getSelectionText(terminalId: terminalId) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func pasteFromClipboard(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string),
+              let terminalId = tabManager?.selectedTerminalId,
+              let pool = terminalPool else { return }
+        if pool.isBracketedPasteEnabled(terminalId: terminalId) {
+            let wrapped = "\u{1B}[200~" + text + "\u{1B}[201~"
+            pool.writeInput(terminalId: terminalId, data: wrapped)
+        } else {
+            pool.writeInput(terminalId: terminalId, data: text)
+        }
+    }
+
     // MARK: - Scrolling
 
     override func scrollWheel(with event: NSEvent) {
@@ -274,7 +537,7 @@ class MultiTerminalMetalView: NSView {
         if abs(delta) > 0.1 {
             let lines = Int32(delta / 3.0)
             if lines != 0 {
-                pool.scroll(delta: lines)
+                pool.scroll(terminalId: terminalId, delta: lines)
                 renderScheduler?.requestRender()
             }
         }

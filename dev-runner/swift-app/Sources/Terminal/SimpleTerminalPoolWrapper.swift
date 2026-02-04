@@ -347,4 +347,107 @@ class SimpleTerminalPoolWrapper {
         guard let handle = handle, terminalId >= 0 else { return false }
         return terminal_pool_clear_log(handle, terminalId)
     }
+
+    // MARK: - Raw Input (for paste)
+
+    /// 写入原始数据到终端（不添加换行符）
+    func writeInput(terminalId: Int, data: String) {
+        guard let handle = handle, terminalId >= 0 else { return }
+        guard let utf8Data = data.data(using: .utf8) else { return }
+
+        utf8Data.withUnsafeBytes { ptr in
+            guard let baseAddress = ptr.baseAddress else { return }
+            _ = terminal_pool_input(handle, terminalId, baseAddress.assumingMemoryBound(to: UInt8.self), utf8Data.count)
+        }
+    }
+
+    // MARK: - Selection
+
+    /// 屏幕坐标转绝对坐标
+    ///
+    /// - Returns: (absoluteRow, col)，失败返回 nil
+    func screenToAbsolute(terminalId: Int, screenRow: Int, screenCol: Int) -> (absoluteRow: Int64, col: Int)? {
+        guard let handle = handle else { return nil }
+        let result = terminal_pool_screen_to_absolute(handle, terminalId, screenRow, screenCol)
+        guard result.success else { return nil }
+        return (result.absolute_row, result.col)
+    }
+
+    /// 设置选区
+    @discardableResult
+    func setSelection(terminalId: Int, startAbsoluteRow: Int64, startCol: Int, endAbsoluteRow: Int64, endCol: Int) -> Bool {
+        guard let handle = handle else { return false }
+        return terminal_pool_set_selection(handle, terminalId, startAbsoluteRow, startCol, endAbsoluteRow, endCol)
+    }
+
+    /// 清除选区
+    @discardableResult
+    func clearSelection(terminalId: Int) -> Bool {
+        guard let handle = handle else { return false }
+        return terminal_pool_clear_selection(handle, terminalId)
+    }
+
+    /// 完成选区（mouseUp 时调用）
+    ///
+    /// 如果选区全是空白，Rust 会自动清除选区并返回 nil
+    func finalizeSelection(terminalId: Int) -> String? {
+        guard let handle = handle else { return nil }
+        let result = terminal_pool_finalize_selection(handle, terminalId)
+        guard result.has_selection, let textPtr = result.text else { return nil }
+        let text = String(cString: textPtr)
+        terminal_pool_free_string(textPtr)
+        return text
+    }
+
+    /// 获取选中文本（不清除选区）
+    func getSelectionText(terminalId: Int) -> String? {
+        guard let handle = handle else { return nil }
+        let result = terminal_pool_get_selection_text(handle, terminalId)
+        guard result.success, let textPtr = result.text else { return nil }
+        let text = String(cString: textPtr)
+        terminal_pool_free_string(textPtr)
+        return text
+    }
+
+    // MARK: - Font Metrics
+
+    /// 获取字体度量（物理像素）
+    ///
+    /// - Returns: (cellWidth, cellHeight, lineHeight)，失败返回 nil
+    func getFontMetrics() -> (cellWidth: Float, cellHeight: Float, lineHeight: Float)? {
+        guard let handle = handle else { return nil }
+        var metrics = SugarloafFontMetrics(cell_width: 0, cell_height: 0, line_height: 0)
+        let success = terminal_pool_get_font_metrics(handle, &metrics)
+        guard success else { return nil }
+        return (metrics.cell_width, metrics.cell_height, metrics.line_height)
+    }
+
+    // MARK: - Mouse Tracking
+
+    /// 检查终端是否启用了鼠标追踪模式（SGR 1006）
+    func hasMouseTrackingMode(terminalId: Int) -> Bool {
+        guard let handle = handle else { return false }
+        return terminal_pool_has_mouse_tracking_mode(handle, terminalId)
+    }
+
+    /// 发送 SGR 格式的鼠标报告
+    ///
+    /// - Parameters:
+    ///   - button: 0=左键, 1=中键, 2=右键, 64=滚动上, 65=滚动下
+    ///   - col: 列（1-based）
+    ///   - row: 行（1-based）
+    ///   - pressed: true=按下, false=释放
+    @discardableResult
+    func sendMouseSGR(terminalId: Int, button: UInt8, col: UInt16, row: UInt16, pressed: Bool) -> Bool {
+        guard let handle = handle else { return false }
+        return terminal_pool_send_mouse_sgr(handle, terminalId, button, col, row, pressed)
+    }
+
+    // MARK: - Paste Mode
+
+    /// 检查终端是否启用了 Bracketed Paste Mode
+    func isBracketedPasteEnabled(terminalId: Int) -> Bool {
+        guard let handle = handle else { return false }
+        return terminal_pool_is_bracketed_paste_enabled(handle, terminalId)
+    }
 }
