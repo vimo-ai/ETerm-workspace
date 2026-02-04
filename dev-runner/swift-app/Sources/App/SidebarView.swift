@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -9,18 +10,19 @@ struct ProjectTreeNode: Identifiable {
     let iconColor: Color
     let isProject: Bool
     let project: ProjectInfo?
+    let fullPath: String
     let children: [ProjectTreeNode]?
 
-    static func folder(name: String, path: String, children: [ProjectTreeNode]) -> ProjectTreeNode {
+    static func folder(name: String, path: String, fullPath: String, children: [ProjectTreeNode]) -> ProjectTreeNode {
         ProjectTreeNode(id: "folder:\(path)", name: name, icon: "folder", iconColor: Theme.textMuted,
-                       isProject: false, project: nil, children: children.isEmpty ? nil : children)
+                       isProject: false, project: nil, fullPath: fullPath, children: children.isEmpty ? nil : children)
     }
 
     static func project(_ project: ProjectInfo) -> ProjectTreeNode {
         ProjectTreeNode(id: "project:\(project.path)", name: project.name,
                        icon: project.adapterType == "xcode" ? "hammer.fill" : "cube.fill",
                        iconColor: project.adapterType == "xcode" ? Theme.xcode : Theme.node,
-                       isProject: true, project: project, children: nil)
+                       isProject: true, project: project, fullPath: project.path, children: nil)
     }
 }
 
@@ -67,13 +69,26 @@ struct SidebarView: View {
 
     private var groupedWorkspaces: [(id: String, groupName: String?, workspaces: [Workspace])] {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
-        let grouped = Dictionary(grouping: runner.workspaces) { workspace -> String in
+
+        // 过滤掉是其他 workspace 子目录的 workspace
+        let filteredWorkspaces = runner.workspaces.filter { workspace in
+            for other in runner.workspaces where other.path != workspace.path {
+                if workspace.path.hasPrefix(other.path + "/") {
+                    return false
+                }
+            }
+            return true
+        }
+
+        // 按前两级目录分组
+        let grouped = Dictionary(grouping: filteredWorkspaces) { workspace -> String in
             let path = workspace.path
             guard path.hasPrefix(homeDir) else { return "__root__" }
             let relativePath = String(path.dropFirst(homeDir.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let components = relativePath.split(separator: "/").map(String.init)
             return components.count >= 3 ? "\(homeDir)/\(components[0])/\(components[1])" : "__standalone__\(path)"
         }
+
         var result: [(id: String, groupName: String?, workspaces: [Workspace])] = []
         for (groupKey, workspaces) in grouped {
             if groupKey.hasPrefix("__standalone__") || groupKey == "__root__" {
@@ -93,10 +108,31 @@ struct SidebarView: View {
             let key = components.count == 1 ? "" : components.dropLast().joined(separator: "/")
             tree[key, default: []].append(project)
         }
+
+        // 收集所有 folder 路径（含中间路径），解决 vlaude/packages 等深层路径的父节点缺失
+        var allFolders: Set<String> = []
+        for key in tree.keys where !key.isEmpty {
+            var current = key
+            while !current.isEmpty {
+                allFolders.insert(current)
+                let parent = (current as NSString).deletingLastPathComponent
+                current = parent
+            }
+        }
+
+        let basePath = workspace.path
         func buildNodes(at path: String) -> [ProjectTreeNode] {
             var nodes: [ProjectTreeNode] = []
-            for folderPath in tree.keys.filter({ !$0.isEmpty && (path.isEmpty ? !$0.contains("/") : ($0 as NSString).deletingLastPathComponent == path) }).sorted() {
-                nodes.append(.folder(name: (folderPath as NSString).lastPathComponent, path: folderPath, children: buildNodes(at: folderPath)))
+            let childFolders = allFolders.filter { folderPath in
+                if path.isEmpty {
+                    return !folderPath.contains("/")
+                } else {
+                    return (folderPath as NSString).deletingLastPathComponent == path
+                }
+            }.sorted()
+            for folderPath in childFolders {
+                let absPath = basePath + "/" + folderPath
+                nodes.append(.folder(name: (folderPath as NSString).lastPathComponent, path: folderPath, fullPath: absPath, children: buildNodes(at: folderPath)))
             }
             if let projects = tree[path] { nodes.append(contentsOf: projects.map { .project($0) }) }
             return nodes
@@ -120,6 +156,13 @@ struct SidebarView: View {
                             .background(Theme.bgPrimary.opacity(0.5)).clipShape(RoundedRectangle(cornerRadius: 3))
                     }
                 }
+                .contextMenu {
+                    Button {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: workspace.path)
+                    } label: {
+                        Label("在访达中打开", systemImage: "folder")
+                    }
+                }
             }
         }
     }
@@ -141,5 +184,12 @@ struct SidebarView: View {
         .padding(.vertical, 3).padding(.trailing, 8).background(isSelected ? Theme.bgHover : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { if let project = node.project { runner.selectProject(project) } }
+        .contextMenu {
+            Button {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: node.fullPath)
+            } label: {
+                Label("在访达中打开", systemImage: "folder")
+            }
+        }
     }
 }
