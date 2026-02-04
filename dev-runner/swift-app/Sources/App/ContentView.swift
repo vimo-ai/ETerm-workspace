@@ -10,6 +10,9 @@ struct ContentView: View {
     @State private var isDraggingOver = false
     @State private var showNewTaskSheet = false
 
+    /// Control API Server (MCP 遥控器后端)
+    @State private var apiServer: ControlAPIServer?
+
     var body: some View {
         HSplitView {
             SidebarView(
@@ -120,6 +123,8 @@ struct ContentView: View {
             ) { controller in
                 DispatchQueue.main.async {
                     self.terminalController = controller
+                    // 初始化 Control API Server
+                    setupAPIServer(controller: controller)
                 }
             }
         }
@@ -178,6 +183,19 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Theme.bgSecondary)
+    }
+
+    // MARK: - API Server
+
+    private func setupAPIServer(controller: MultiTerminalController) {
+        guard apiServer == nil, let pool = controller.terminalPool else { return }
+
+        let server = ControlAPIServer(port: 9274)
+        server.configure(runner: runner, tabManager: tabManager, terminalPool: pool)
+        server.start()
+        apiServer = server
+
+        print("[ContentView] Control API Server started on port 9274")
     }
 
     // MARK: - Actions

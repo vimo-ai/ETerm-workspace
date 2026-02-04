@@ -56,7 +56,8 @@ class SimpleTerminalPoolWrapper {
             display_handle: windowHandle,
             window_width: width,
             window_height: height,
-            history_size: 10000
+            history_size: 10000,
+            log_buffer_size: 10000  // dev-runner 启用日志捕获
         )
 
         handle = terminal_pool_create(config)
@@ -258,5 +259,92 @@ class SimpleTerminalPoolWrapper {
     func scroll(terminalId: Int, delta: Int32) {
         guard let handle = handle, terminalId >= 0 else { return }
         _ = terminal_pool_scroll(handle, terminalId, delta)
+    }
+
+    // MARK: - Output Capture (for MCP API)
+
+    /// 获取终端可见行（用于日志 API）
+    ///
+    /// - Parameter terminalId: 终端 ID
+    /// - Returns: 可见行文本数组，失败返回空数组
+    func getVisibleLines(_ terminalId: Int) -> [String] {
+        guard let handle = handle, terminalId >= 0 else { return [] }
+
+        // FFI: const char*** -> Swift 需要 UnsafeMutablePointer<UnsafePointer<CChar>?>
+        var linesPtr: UnsafeMutablePointer<UnsafePointer<CChar>?>? = nil
+        var count: Int = 0
+
+        let success = terminal_pool_get_visible_lines(handle, Int64(terminalId), &linesPtr, &count)
+
+        guard success, let lines = linesPtr, count > 0 else { return [] }
+
+        defer {
+            terminal_pool_free_string_array(lines, count)
+        }
+
+        var result: [String] = []
+        result.reserveCapacity(count)
+
+        for i in 0..<count {
+            if let cStr = lines[i] {
+                result.append(String(cString: cStr))
+            }
+        }
+
+        return result
+    }
+
+    /// 获取终端滚动历史行数
+    func getScrollbackLines(_ terminalId: Int) -> Int {
+        guard let handle = handle, terminalId >= 0 else { return 0 }
+        let lines = terminal_pool_get_scrollback_lines(handle, Int64(terminalId))
+        return max(0, Int(lines))
+    }
+
+    // MARK: - LogBuffer API (Rust 层日志捕获)
+
+    /// 查询终端日志（分页 + 搜索）
+    ///
+    /// - Parameters:
+    ///   - terminalId: 终端 ID
+    ///   - since: 返回 seq > since 的日志（0 = 全部）
+    ///   - limit: 最多返回行数
+    ///   - search: 可选的搜索过滤
+    /// - Returns: JSON 字符串，nil 表示 LogBuffer 未启用
+    func queryLog(_ terminalId: Int, since: UInt64 = 0, limit: Int = 200, search: String? = nil) -> String? {
+        guard let handle = handle, terminalId >= 0 else { return nil }
+
+        let result: UnsafeMutablePointer<CChar>?
+        if let search = search {
+            result = terminal_pool_query_log(handle, terminalId, since, limit, search)
+        } else {
+            result = terminal_pool_query_log(handle, terminalId, since, limit, nil)
+        }
+
+        guard let cStr = result else { return nil }
+        let json = String(cString: cStr)
+        rio_free_string(cStr)
+        return json
+    }
+
+    /// 获取终端最后 N 行日志
+    ///
+    /// - Parameters:
+    ///   - terminalId: 终端 ID
+    ///   - count: 行数
+    /// - Returns: JSON 数组字符串，nil 表示 LogBuffer 未启用
+    func tailLog(_ terminalId: Int, count: Int = 100) -> String? {
+        guard let handle = handle, terminalId >= 0 else { return nil }
+
+        guard let cStr = terminal_pool_tail_log(handle, terminalId, count) else { return nil }
+        let json = String(cString: cStr)
+        rio_free_string(cStr)
+        return json
+    }
+
+    /// 清空终端日志缓冲
+    func clearLog(_ terminalId: Int) -> Bool {
+        guard let handle = handle, terminalId >= 0 else { return false }
+        return terminal_pool_clear_log(handle, terminalId)
     }
 }

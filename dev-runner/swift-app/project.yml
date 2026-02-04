@@ -56,3 +56,18 @@ targets:
           cd "${PROJECT_DIR}/../app"
           cargo build --release
         basedOnDependencyAnalysis: false
+
+  DevRunnerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.vimo.DevRunnerTests
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+    dependencies:
+      - target: DevRunner

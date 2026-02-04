@@ -447,7 +447,101 @@ final class DevRunner: ObservableObject {
         return try decode([DeviceInfo].self, from: json)
     }
 
-    // MARK: - Command Generation
+    // MARK: - Stateless API (for ControlAPIServer, no side effects on UI state)
+
+    /// Project context resolved for API use, without touching @Published state
+    struct ProjectContext {
+        let projectPath: String
+        let target: TargetInfo
+        let device: DeviceInfo?
+        let allTargets: [TargetInfo]
+        let allDevices: [DeviceInfo]
+    }
+
+    /// Resolve project context: open project in FFI, list targets/devices, auto-select.
+    /// Does NOT modify any @Published UI state.
+    func resolveProjectContext(
+        projectPath: String,
+        targetName: String?,
+        deviceName: String?
+    ) -> ProjectContext? {
+        // Ensure project metadata is loaded in the Rust handle
+        Self.openProjectSync(handle: handle, projectPath: projectPath)
+
+        let targets = Self.listTargetsSync(handle: handle, projectPath: projectPath)
+        let devices = Self.listDevicesSync(handle: handle, projectPath: projectPath)
+
+        // Resolve target: explicit name > app target > first
+        let target: TargetInfo
+        if let name = targetName,
+           let found = targets.first(where: { $0.name == name }) {
+            target = found
+        } else if let app = targets.first(where: { $0.targetType.lowercased().contains("app") }) {
+            target = app
+        } else if let first = targets.first {
+            target = first
+        } else {
+            return nil
+        }
+
+        // Resolve device: explicit name > mac > simulator > physical
+        let device: DeviceInfo?
+        if let name = deviceName {
+            device = devices.first(where: { $0.name == name })
+        } else {
+            device = devices.first(where: { $0.isMac && $0.isAvailable })
+                ?? devices.first(where: { $0.isSimulator && $0.isAvailable })
+                ?? devices.first(where: { $0.isAvailable })
+        }
+
+        return ProjectContext(
+            projectPath: projectPath,
+            target: target,
+            device: device,
+            allTargets: targets,
+            allDevices: devices
+        )
+    }
+
+    /// Generate build command with explicit parameters (no global state dependency)
+    func buildCommand(projectPath: String, target: String, options: BuildOptions?) throws -> CommandInfo {
+        let optionsJson = try options.map { try encode($0) }
+        let json = try callFFI { errorPtr in
+            projectPath.withCString { pathPtr in
+                target.withCString { targetPtr in
+                    if let opts = optionsJson {
+                        return opts.withCString { optsPtr in
+                            dev_runner_build_cmd(handle, pathPtr, targetPtr, optsPtr, errorPtr)
+                        }
+                    } else {
+                        return dev_runner_build_cmd(handle, pathPtr, targetPtr, nil, errorPtr)
+                    }
+                }
+            }
+        }
+        return try decode(CommandInfo.self, from: json)
+    }
+
+    /// Generate run command with explicit parameters (no global state dependency)
+    func runCommand(projectPath: String, target: String, options: RunOptions?) throws -> CommandInfo {
+        let optionsJson = try options.map { try encode($0) }
+        let json = try callFFI { errorPtr in
+            projectPath.withCString { pathPtr in
+                target.withCString { targetPtr in
+                    if let opts = optionsJson {
+                        return opts.withCString { optsPtr in
+                            dev_runner_run_cmd(handle, pathPtr, targetPtr, optsPtr, errorPtr)
+                        }
+                    } else {
+                        return dev_runner_run_cmd(handle, pathPtr, targetPtr, nil, errorPtr)
+                    }
+                }
+            }
+        }
+        return try decode(CommandInfo.self, from: json)
+    }
+
+    // MARK: - Command Generation (UI-stateful, reads from selectedProject/selectedTarget)
 
     func buildCommand(options: BuildOptions? = nil) throws -> CommandInfo {
         guard let projectPath = selectedProject?.path else {

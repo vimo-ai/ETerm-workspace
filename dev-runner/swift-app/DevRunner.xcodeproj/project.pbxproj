@@ -3,58 +3,51 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
+		063E8758B571395C45EF52A3 /* ControlAPIServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B2D0EB98165AA95AAD8966 /* ControlAPIServer.swift */; };
 		1B372A8AFB9B637EC5A61F97 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FF090D41A7860ACA07F8D28 /* ContentView.swift */; };
-		48D9E3292F31D89C001D7F5B /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48D9E3282F31D89C001D7F5B /* SidebarView.swift */; };
+		33198C8560728F3D91EADFF1 /* SimpleTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAD652872415BFB0FC606A6C /* SimpleTerminalView.swift */; };
+		5257BA8B202DAA969AED8077 /* TerminalTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1EB862796F417588E94A64 /* TerminalTabBar.swift */; };
 		542BDA4273755F61ABD3F5F6 /* DevRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA8CDAD97BF595FD7789E12 /* DevRunner.swift */; };
-		C1D2E3F4A5B67890C1D2E3F1 /* TaskListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F4A5B67890C1D2E3F0 /* TaskListView.swift */; };
-		C1D2E3F4A5B67890C1D2E3F3 /* NewTaskSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F4A5B67890C1D2E3F2 /* NewTaskSheet.swift */; };
+		5AF66900BD5FEE23FC71D3C5 /* libsugarloaf_ffi.a in Resources */ = {isa = PBXBuildFile; fileRef = 2B24B5D121E945A2E4BE52CE /* libsugarloaf_ffi.a */; };
 		64DA73E651A9C50C46905DE7 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34EB77C3FAEBAF47037A33F2 /* Theme.swift */; };
-		A1B2C3D4E5F67890A1B2C3D4 /* SimpleTerminalPoolWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */; };
-		A1B2C3D4E5F67890A1B2C3D6 /* SimpleRenderScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */; };
-		A1B2C3D4E5F67890A1B2C3D8 /* SimpleTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */; };
-		A1B2C3D4E5F67890A1B2C3DA /* libsugarloaf_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890A1B2C3DB /* libsugarloaf_ffi.a */; };
-		B1C2D3E4F5A67890B1C2D3E0 /* MultiTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E1 /* MultiTerminalView.swift */; };
-		B1C2D3E4F5A67890B1C2D3E2 /* TerminalTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */; };
-		B1C2D3E4F5A67890B1C2D3E4 /* TerminalTabManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */; };
-		B1C2D3E4F5A67890B1C2D3E6 /* ProcessMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A67890B1C2D3E7 /* ProcessMonitor.swift */; };
+		738764C4AA9658987C467664 /* NewTaskSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 199BDBB1BF76497B7309EE4A /* NewTaskSheet.swift */; };
+		8AC50D5CE93FCCD6BD615A91 /* MultiTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13DA9A5C9DFC211C540ADB82 /* MultiTerminalView.swift */; };
+		9F47D5022F8F7B613C0C803C /* SimpleTerminalPoolWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59C0653889ED663A8EFFD8B2 /* SimpleTerminalPoolWrapper.swift */; };
+		A08E3239363195539C6E819C /* HTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B891420E46A6E7991690CA20 /* HTTPServer.swift */; };
+		ABA9DA8EFC31D171B05F615F /* TerminalTabManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 099B7143B1754B87AA29176D /* TerminalTabManager.swift */; };
+		B26602653DE989E10D8C3AFD /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A3A8E96E0520FC3FC2FDF1 /* SidebarView.swift */; };
+		B55F443987968511D52D651E /* SimpleRenderScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53573C4D40CFD5D88F13763F /* SimpleRenderScheduler.swift */; };
+		D5180AA62B72EF138BE8F494 /* TaskListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D83535AFE3017938FD00179A /* TaskListView.swift */; };
+		DB2A52D4B0AA1D659B5E4913 /* ProcessMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6CB371B159B36207A6F4751 /* ProcessMonitor.swift */; };
 		E1D437814D1CD4A1624F9A1B /* DevRunnerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		099B7143B1754B87AA29176D /* TerminalTabManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabManager.swift; sourceTree = "<group>"; };
+		0D1EB862796F417588E94A64 /* TerminalTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabBar.swift; sourceTree = "<group>"; };
+		13DA9A5C9DFC211C540ADB82 /* MultiTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiTerminalView.swift; sourceTree = "<group>"; };
+		17A3A8E96E0520FC3FC2FDF1 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		199BDBB1BF76497B7309EE4A /* NewTaskSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskSheet.swift; sourceTree = "<group>"; };
+		290C7F8ED820E6BDAB4D38FF /* SugarloafBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SugarloafBridge.h; sourceTree = "<group>"; };
+		2B24B5D121E945A2E4BE52CE /* libsugarloaf_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsugarloaf_ffi.a; sourceTree = "<group>"; };
 		34EB77C3FAEBAF47037A33F2 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		48D9E3282F31D89C001D7F5B /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
-		C1D2E3F4A5B67890C1D2E3F0 /* TaskListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskListView.swift; sourceTree = "<group>"; };
-		C1D2E3F4A5B67890C1D2E3F2 /* NewTaskSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskSheet.swift; sourceTree = "<group>"; };
+		53573C4D40CFD5D88F13763F /* SimpleRenderScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleRenderScheduler.swift; sourceTree = "<group>"; };
+		59C0653889ED663A8EFFD8B2 /* SimpleTerminalPoolWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalPoolWrapper.swift; sourceTree = "<group>"; };
 		5FF090D41A7860ACA07F8D28 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevRunnerApp.swift; sourceTree = "<group>"; };
 		73F4CD3E371232E813576DD9 /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
 		8CA8CDAD97BF595FD7789E12 /* DevRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevRunner.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalPoolWrapper.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleRenderScheduler.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalView.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F67890A1B2C3DB /* libsugarloaf_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsugarloaf_ffi.a; sourceTree = "<group>"; };
-		A1B2C3D4E5F67890A1B2C3DC /* SugarloafBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SugarloafBridge.h; sourceTree = "<group>"; };
 		ACCCB25D5AED6D63F65F55AC /* DevRunner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DevRunner.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		B1C2D3E4F5A67890B1C2D3E1 /* MultiTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiTerminalView.swift; sourceTree = "<group>"; };
-		B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabBar.swift; sourceTree = "<group>"; };
-		B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabManager.swift; sourceTree = "<group>"; };
-		B1C2D3E4F5A67890B1C2D3E7 /* ProcessMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessMonitor.swift; sourceTree = "<group>"; };
+		B4B2D0EB98165AA95AAD8966 /* ControlAPIServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlAPIServer.swift; sourceTree = "<group>"; };
+		B891420E46A6E7991690CA20 /* HTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPServer.swift; sourceTree = "<group>"; };
+		D83535AFE3017938FD00179A /* TaskListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskListView.swift; sourceTree = "<group>"; };
+		E6CB371B159B36207A6F4751 /* ProcessMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessMonitor.swift; sourceTree = "<group>"; };
+		EAD652872415BFB0FC606A6C /* SimpleTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		A1B2C3D4E5F67890A1B2C3DD /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A1B2C3D4E5F67890A1B2C3DA /* libsugarloaf_ffi.a in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		12FBAD607DB27521E5D3BA9C = {
@@ -73,26 +66,26 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		A1B2C3D4E5F67890A1B2C3DE /* Terminal */ = {
+		451952FBB2B8D5E59F670FE6 /* Terminal */ = {
 			isa = PBXGroup;
 			children = (
-				A1B2C3D4E5F67890A1B2C3DF /* Libs */,
-				A1B2C3D4E5F67890A1B2C3D5 /* SimpleTerminalPoolWrapper.swift */,
-				A1B2C3D4E5F67890A1B2C3D7 /* SimpleRenderScheduler.swift */,
-				A1B2C3D4E5F67890A1B2C3D9 /* SimpleTerminalView.swift */,
-				B1C2D3E4F5A67890B1C2D3E1 /* MultiTerminalView.swift */,
-				B1C2D3E4F5A67890B1C2D3E3 /* TerminalTabBar.swift */,
-				B1C2D3E4F5A67890B1C2D3E5 /* TerminalTabManager.swift */,
-				B1C2D3E4F5A67890B1C2D3E7 /* ProcessMonitor.swift */,
+				13DA9A5C9DFC211C540ADB82 /* MultiTerminalView.swift */,
+				E6CB371B159B36207A6F4751 /* ProcessMonitor.swift */,
+				53573C4D40CFD5D88F13763F /* SimpleRenderScheduler.swift */,
+				59C0653889ED663A8EFFD8B2 /* SimpleTerminalPoolWrapper.swift */,
+				EAD652872415BFB0FC606A6C /* SimpleTerminalView.swift */,
+				0D1EB862796F417588E94A64 /* TerminalTabBar.swift */,
+				099B7143B1754B87AA29176D /* TerminalTabManager.swift */,
+				5D069949E99619F2984B79DE /* Libs */,
 			);
 			path = Terminal;
 			sourceTree = "<group>";
 		};
-		A1B2C3D4E5F67890A1B2C3DF /* Libs */ = {
+		5D069949E99619F2984B79DE /* Libs */ = {
 			isa = PBXGroup;
 			children = (
-				A1B2C3D4E5F67890A1B2C3DB /* libsugarloaf_ffi.a */,
-				A1B2C3D4E5F67890A1B2C3DC /* SugarloafBridge.h */,
+				2B24B5D121E945A2E4BE52CE /* libsugarloaf_ffi.a */,
+				290C7F8ED820E6BDAB4D38FF /* SugarloafBridge.h */,
 			);
 			path = Libs;
 			sourceTree = "<group>";
@@ -100,12 +93,12 @@
 		AC3F0C31625613FF44C2C0FF /* App */ = {
 			isa = PBXGroup;
 			children = (
-				48D9E3282F31D89C001D7F5B /* SidebarView.swift */,
 				5FF090D41A7860ACA07F8D28 /* ContentView.swift */,
 				60FB4BBE06C99A52BFBB95D7 /* DevRunnerApp.swift */,
+				199BDBB1BF76497B7309EE4A /* NewTaskSheet.swift */,
+				17A3A8E96E0520FC3FC2FDF1 /* SidebarView.swift */,
+				D83535AFE3017938FD00179A /* TaskListView.swift */,
 				34EB77C3FAEBAF47037A33F2 /* Theme.swift */,
-				C1D2E3F4A5B67890C1D2E3F0 /* TaskListView.swift */,
-				C1D2E3F4A5B67890C1D2E3F2 /* NewTaskSheet.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -113,11 +106,21 @@
 		B9ADD5AC9FFF722248C90710 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				BD5932AC6246E854B847F210 /* API */,
 				AC3F0C31625613FF44C2C0FF /* App */,
 				FB90BFA997C7124F0EBD45ED /* FFI */,
-				A1B2C3D4E5F67890A1B2C3DE /* Terminal */,
+				451952FBB2B8D5E59F670FE6 /* Terminal */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		BD5932AC6246E854B847F210 /* API */ = {
+			isa = PBXGroup;
+			children = (
+				B4B2D0EB98165AA95AAD8966 /* ControlAPIServer.swift */,
+				B891420E46A6E7991690CA20 /* HTTPServer.swift */,
+			);
+			path = API;
 			sourceTree = "<group>";
 		};
 		FB90BFA997C7124F0EBD45ED /* FFI */ = {
@@ -138,7 +141,7 @@
 			buildPhases = (
 				21C6DCB2C33ED470DCB0E76B /* Build Rust FFI */,
 				C282036C7110EA3590CFD1C8 /* Sources */,
-				A1B2C3D4E5F67890A1B2C3DD /* Frameworks */,
+				E1F6D0A60220F76C1DA1DB82 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -176,6 +179,7 @@
 			);
 			mainGroup = 12FBAD607DB27521E5D3BA9C;
 			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -183,6 +187,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E1F6D0A60220F76C1DA1DB82 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5AF66900BD5FEE23FC71D3C5 /* libsugarloaf_ffi.a in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		21C6DCB2C33ED470DCB0E76B /* Build Rust FFI */ = {
@@ -212,19 +227,21 @@
 			buildActionMask = 2147483647;
 			files = (
 				1B372A8AFB9B637EC5A61F97 /* ContentView.swift in Sources */,
+				063E8758B571395C45EF52A3 /* ControlAPIServer.swift in Sources */,
 				542BDA4273755F61ABD3F5F6 /* DevRunner.swift in Sources */,
 				E1D437814D1CD4A1624F9A1B /* DevRunnerApp.swift in Sources */,
+				A08E3239363195539C6E819C /* HTTPServer.swift in Sources */,
+				8AC50D5CE93FCCD6BD615A91 /* MultiTerminalView.swift in Sources */,
+				738764C4AA9658987C467664 /* NewTaskSheet.swift in Sources */,
+				DB2A52D4B0AA1D659B5E4913 /* ProcessMonitor.swift in Sources */,
+				B26602653DE989E10D8C3AFD /* SidebarView.swift in Sources */,
+				B55F443987968511D52D651E /* SimpleRenderScheduler.swift in Sources */,
+				9F47D5022F8F7B613C0C803C /* SimpleTerminalPoolWrapper.swift in Sources */,
+				33198C8560728F3D91EADFF1 /* SimpleTerminalView.swift in Sources */,
+				D5180AA62B72EF138BE8F494 /* TaskListView.swift in Sources */,
+				5257BA8B202DAA969AED8077 /* TerminalTabBar.swift in Sources */,
+				ABA9DA8EFC31D171B05F615F /* TerminalTabManager.swift in Sources */,
 				64DA73E651A9C50C46905DE7 /* Theme.swift in Sources */,
-				A1B2C3D4E5F67890A1B2C3D4 /* SimpleTerminalPoolWrapper.swift in Sources */,
-				48D9E3292F31D89C001D7F5B /* SidebarView.swift in Sources */,
-				A1B2C3D4E5F67890A1B2C3D6 /* SimpleRenderScheduler.swift in Sources */,
-				A1B2C3D4E5F67890A1B2C3D8 /* SimpleTerminalView.swift in Sources */,
-				B1C2D3E4F5A67890B1C2D3E0 /* MultiTerminalView.swift in Sources */,
-				B1C2D3E4F5A67890B1C2D3E2 /* TerminalTabBar.swift in Sources */,
-				B1C2D3E4F5A67890B1C2D3E4 /* TerminalTabManager.swift in Sources */,
-				B1C2D3E4F5A67890B1C2D3E6 /* ProcessMonitor.swift in Sources */,
-				C1D2E3F4A5B67890C1D2E3F1 /* TaskListView.swift in Sources */,
-				C1D2E3F4A5B67890C1D2E3F3 /* NewTaskSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -239,10 +256,6 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Sources/Terminal/Libs",
-				);
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -255,21 +268,8 @@
 				);
 				OTHER_LDFLAGS = (
 					"-ldev_runner_app",
-					"-force_load",
-					"$(PROJECT_DIR)/Sources/Terminal/Libs/libsugarloaf_ffi.a",
+					"-lsugarloaf_ffi",
 					"-lc++",
-					"-framework",
-					Metal,
-					"-framework",
-					MetalKit,
-					"-framework",
-					QuartzCore,
-					"-framework",
-					CoreGraphics,
-					"-framework",
-					CoreText,
-					"-framework",
-					Carbon,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.vimo.DevRunner;
 				SDKROOT = macosx;
@@ -350,10 +350,6 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Sources/Terminal/Libs",
-				);
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -366,21 +362,8 @@
 				);
 				OTHER_LDFLAGS = (
 					"-ldev_runner_app",
-					"-force_load",
-					"$(PROJECT_DIR)/Sources/Terminal/Libs/libsugarloaf_ffi.a",
+					"-lsugarloaf_ffi",
 					"-lc++",
-					"-framework",
-					Metal,
-					"-framework",
-					MetalKit,
-					"-framework",
-					QuartzCore,
-					"-framework",
-					CoreGraphics,
-					"-framework",
-					CoreText,
-					"-framework",
-					Carbon,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.vimo.DevRunner;
 				SDKROOT = macosx;
