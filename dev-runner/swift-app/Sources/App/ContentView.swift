@@ -3,7 +3,6 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var runner: DevRunner
-    @State private var isBuilding = false
     @State private var errorMessage: String?
     @State private var terminalController: MultiTerminalController?
     @StateObject private var tabManager = TerminalTabManager()
@@ -44,6 +43,14 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .stopTask)) { notification in
             if let terminalId = notification.userInfo?["terminalId"] as? Int {
                 terminalController?.sendInterrupt(to: terminalId)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .restartTask)) { notification in
+            if let tabIdStr = notification.userInfo?["tabId"] as? String,
+               let tabId = UUID(uuidString: tabIdStr),
+               let tab = tabManager.tabs.first(where: { $0.id == tabId }),
+               let command = tab.commandString {
+                restartTask(tab: tab, command: command)
             }
         }
     }
@@ -132,20 +139,25 @@ struct ContentView: View {
 
     private func miniTabBar(_ tab: TerminalTab) -> some View {
         HStack(spacing: 8) {
-            // Status
-            Circle()
-                .fill(tab.isRunning ? Theme.success : Theme.textMuted.opacity(0.5))
-                .frame(width: 6, height: 6)
+            // Status indicator
+            miniStatusIndicator(tab.taskState)
 
             // Title
             Text(tab.title)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(Theme.textPrimary)
 
+            // Duration (for active/completed tasks)
+            if let durationText = tab.durationText {
+                Text(durationText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Theme.textMuted)
+            }
+
             Spacer()
 
             // Quick actions
-            if tab.isRunning {
+            if tab.taskState.isActive {
                 Button {
                     terminalController?.sendInterrupt(to: tab.terminalId)
                 } label: {
@@ -183,6 +195,34 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Theme.bgSecondary)
+    }
+
+    @ViewBuilder
+    private func miniStatusIndicator(_ state: TaskState) -> some View {
+        switch state {
+        case .idle:
+            Circle()
+                .fill(Theme.textMuted.opacity(0.5))
+                .frame(width: 6, height: 6)
+        case .sent:
+            Circle()
+                .fill(Theme.warning)
+                .frame(width: 6, height: 6)
+        case .running:
+            Circle()
+                .fill(Theme.success)
+                .frame(width: 6, height: 6)
+        case .completed(let exitCode):
+            if exitCode == 0 {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(Theme.success)
+            } else {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(Theme.error)
+            }
+        }
     }
 
     // MARK: - API Server
@@ -254,7 +294,7 @@ struct ContentView: View {
     private func startTask(action: TaskAction, target: TargetInfo?, device: DeviceInfo?) {
         guard let project = runner.selectedProject else { return }
 
-        // 临时设置 target/device（用于命令生成）
+        // 同步更新 UI state（侧边栏选中等）
         if let target = target {
             runner.selectedTarget = target
         }
@@ -262,60 +302,59 @@ struct ContentView: View {
             runner.selectedDevice = device
         }
 
+        // 捕获值，避免闭包中读取可变的全局状态
+        let projectPath = project.path
+        let targetName = target?.name ?? runner.selectedTarget?.name ?? ""
+        let deviceId = device?.deviceId
+        let deviceName = device?.name
+
         switch action {
         case .shell:
-            // 创建普通 shell tab
-            tabManager.createTab(cwd: project.path, title: "zsh", taskKey: nil)
+            tabManager.createTab(cwd: projectPath, title: "zsh", taskKey: nil)
 
         case .build:
             let taskKey = TaskKey(
-                projectPath: project.path,
+                projectPath: projectPath,
                 action: .build,
-                deviceId: device?.deviceId,
-                deviceName: device?.name
+                deviceId: deviceId,
+                deviceName: deviceName
             )
-            executeTask(taskKey: taskKey) {
+            executeTask(projectPath: projectPath, taskKey: taskKey) {
                 let options = BuildOptions(
                     config: "Debug",
-                    deviceId: device?.deviceId
+                    deviceId: deviceId
                 )
-                return try runner.buildCommand(options: options)
+                return try runner.buildCommand(projectPath: projectPath, target: targetName, options: options)
             }
 
         case .run:
             let taskKey = TaskKey(
-                projectPath: project.path,
+                projectPath: projectPath,
                 action: .run,
-                deviceId: device?.deviceId,
-                deviceName: device?.name
+                deviceId: deviceId,
+                deviceName: deviceName
             )
-            executeTask(taskKey: taskKey) {
-                let options = RunOptions(deviceId: device?.deviceId)
-                return try runner.runCommand(options: options)
+            executeTask(projectPath: projectPath, taskKey: taskKey) {
+                let options = RunOptions(deviceId: deviceId)
+                return try runner.runCommand(projectPath: projectPath, target: targetName, options: options)
             }
         }
     }
 
-    /// 执行任务（查找/创建 Tab，处理运行中状态）
-    private func executeTask(taskKey: TaskKey, commandBuilder: @escaping () throws -> CommandInfo) {
-        guard let project = runner.selectedProject else { return }
+    /// 执行任务（查找/创建 Tab，处理运行中状态，标记状态机）
+    private func executeTask(projectPath: String, taskKey: TaskKey, commandBuilder: @escaping () throws -> CommandInfo) {
+        // 查找或创建对应的 Tab
+        guard let result = tabManager.findOrCreateTaskTab(
+            cwd: projectPath,
+            taskKey: taskKey
+        ) else {
+            errorMessage = "Failed to create terminal tab"
+            return
+        }
 
-        isBuilding = true
+        let (tab, _, wasRunning) = result
 
         Task {
-            defer { isBuilding = false }
-
-            // 查找或创建对应的 Tab
-            guard let result = tabManager.findOrCreateTaskTab(
-                cwd: project.path,
-                taskKey: taskKey
-            ) else {
-                errorMessage = "Failed to create terminal tab"
-                return
-            }
-
-            let (tab, _, wasRunning) = result
-
             // 如果正在运行，先停止
             if wasRunning {
                 terminalController?.sendInterrupt(to: tab.terminalId)
@@ -331,15 +370,42 @@ struct ContentView: View {
                     fullCommand += " " + cmd.args.joined(separator: " ")
                 }
 
-                // 发送命令到对应 tab 的终端
+                let baseCommand: String
                 if let cwd = cmd.cwd {
-                    terminalController?.sendCommand("cd '\(cwd)' && \(fullCommand)", to: tab.terminalId)
+                    baseCommand = "cd '\(cwd)' && \(fullCommand)"
                 } else {
-                    terminalController?.sendCommand(fullCommand, to: tab.terminalId)
+                    baseCommand = fullCommand
                 }
+
+                // 包装命令：追加退出码标记（用于 LogBuffer 解析）
+                let shellCommand = TaskExitMarker.wrap(baseCommand)
+
+                // 标记状态：sent
+                tabManager.markTaskSent(tab.id, command: baseCommand)
+
+                // 发送命令到终端
+                terminalController?.sendCommand(shellCommand, to: tab.terminalId)
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    /// 重跑任务（从 restartTask 通知触发）
+    private func restartTask(tab: TerminalTab, command: String) {
+        Task {
+            // 如果还在运行，先停止
+            if tab.taskState.isActive {
+                terminalController?.sendInterrupt(to: tab.terminalId)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+
+            // 标记状态：sent（保存原始命令，不含包装）
+            tabManager.markTaskSent(tab.id, command: command)
+
+            // 包装命令并发送
+            let wrappedCommand = TaskExitMarker.wrap(command)
+            terminalController?.sendCommand(wrappedCommand, to: tab.terminalId)
         }
     }
 }

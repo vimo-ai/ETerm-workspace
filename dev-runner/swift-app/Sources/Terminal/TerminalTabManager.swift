@@ -15,6 +15,36 @@ enum TaskAction: String, Equatable {
     case shell  // 普通 shell，无关联任务
 }
 
+/// 任务状态
+enum TaskState: Equatable {
+    case idle                         // shell 待命 / 任务未启动
+    case sent                         // 命令已发出，进程尚未起来
+    case running                      // 子进程在跑
+    case completed(exitCode: Int32)   // 结束，带退出码
+
+    var isRunning: Bool {
+        if case .running = self { return true }
+        return false
+    }
+
+    var isActive: Bool {
+        switch self {
+        case .sent, .running: return true
+        default: return false
+        }
+    }
+
+    var isSuccess: Bool {
+        if case .completed(let code) = self { return code == 0 }
+        return false
+    }
+
+    var isFailed: Bool {
+        if case .completed(let code) = self { return code != 0 }
+        return false
+    }
+}
+
 /// 任务标识（用于查找已存在的 Tab）
 struct TaskKey: Hashable {
     let projectPath: String
@@ -56,17 +86,39 @@ struct TerminalTab: Identifiable, Equatable {
     let id: UUID
     let terminalId: Int          // TerminalPool 中的 ID
     var title: String            // 显示名称
-    var isRunning: Bool = false  // 是否有子进程在跑
+    var taskState: TaskState = .idle  // 任务状态
     var ports: [UInt16] = []     // 监听端口
     var cpuPercent: Double = 0   // CPU 使用率 %
     var memoryMB: Double = 0     // 内存占用 MB
+    var startedAt: Date?         // 任务开始时间
+    var completedAt: Date?       // 任务结束时间
+    var commandString: String?   // 上次执行的命令（用于 restart）
 
     // Task 关联
     var taskKey: TaskKey?        // 关联的任务（nil 表示普通 shell）
 
+    /// 向后兼容：isRunning 计算属性
+    var isRunning: Bool { taskState.isRunning }
+
+    /// 任务耗时（秒）
+    var duration: TimeInterval? {
+        guard let start = startedAt else { return nil }
+        let end = completedAt ?? Date()
+        return end.timeIntervalSince(start)
+    }
+
+    /// 格式化耗时
+    var durationText: String? {
+        guard let d = duration else { return nil }
+        if d < 60 { return String(format: "%.0fs", d) }
+        let min = Int(d) / 60
+        let sec = Int(d) % 60
+        return "\(min)m\(sec)s"
+    }
+
     static func == (lhs: TerminalTab, rhs: TerminalTab) -> Bool {
         lhs.id == rhs.id && lhs.title == rhs.title &&
-        lhs.isRunning == rhs.isRunning && lhs.ports == rhs.ports &&
+        lhs.taskState == rhs.taskState && lhs.ports == rhs.ports &&
         lhs.taskKey == rhs.taskKey &&
         abs(lhs.cpuPercent - rhs.cpuPercent) < 0.1 &&
         abs(lhs.memoryMB - rhs.memoryMB) < 0.1
@@ -156,6 +208,33 @@ class TerminalTabManager: ObservableObject {
         return (newTab, true, false)
     }
 
+    /// 标记任务为"已发送命令"
+    func markTaskSent(_ tabId: UUID, command: String) {
+        guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        tabs[index].taskState = .sent
+        tabs[index].commandString = command
+        tabs[index].startedAt = Date()
+        tabs[index].completedAt = nil
+        objectWillChange.send()
+    }
+
+    /// 标记任务完成（带退出码）
+    func markTaskCompleted(_ tabId: UUID, exitCode: Int32) {
+        guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        tabs[index].taskState = .completed(exitCode: exitCode)
+        tabs[index].completedAt = Date()
+        objectWillChange.send()
+    }
+
+    /// 重置任务状态为 idle
+    func markTaskIdle(_ tabId: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        tabs[index].taskState = .idle
+        tabs[index].startedAt = nil
+        tabs[index].completedAt = nil
+        objectWillChange.send()
+    }
+
     /// 关闭 Tab
     func closeTab(_ tab: TerminalTab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
@@ -216,16 +295,66 @@ class TerminalTabManager: ObservableObject {
                 }
             }
 
-            let running = pool.hasRunningProcess(terminalId)
-            if tabs[i].isRunning != running {
-                tabs[i].isRunning = running
-                needsUpdate = true
+            let hasProcess = pool.hasRunningProcess(terminalId)
+            let oldState = tabs[i].taskState
+
+            switch oldState {
+            case .sent:
+                // sent → running：检测到子进程启动
+                if hasProcess {
+                    tabs[i].taskState = .running
+                    needsUpdate = true
+                }
+
+            case .running:
+                // running → completed：子进程结束，从 LogBuffer 解析真实退出码
+                if !hasProcess {
+                    let exitCode = parseExitCode(terminalId: terminalId)
+                    tabs[i].taskState = .completed(exitCode: exitCode)
+                    tabs[i].completedAt = Date()
+                    needsUpdate = true
+                }
+
+            case .idle:
+                // shell tab：跟踪 hasProcess 用于 UI 指示（不走状态机）
+                // 无需状态转换
+
+                break
+
+            case .completed:
+                // 已完成，不再变化（除非 markTaskSent 重置）
+                break
             }
         }
 
         if needsUpdate {
             objectWillChange.send()
         }
+    }
+
+    /// LogBuffer 日志行（用于解码 tailLog JSON）
+    private struct LogLine: Decodable {
+        let text: String
+    }
+
+    /// 从 LogBuffer 解析任务退出码
+    private func parseExitCode(terminalId: Int) -> Int32 {
+        // 读取最后 20 行日志，搜索退出码标记
+        guard let pool = pool,
+              let logJson = pool.tailLog(terminalId, count: 20) else {
+            return 0  // LogBuffer 不可用，回退到 0
+        }
+
+        // tailLog 返回 JSON 数组 [{seq, text}, ...]
+        if let data = logJson.data(using: .utf8),
+           let lines = try? JSONDecoder().decode([LogLine].self, from: data) {
+            let text = lines.map(\.text).joined(separator: "\n")
+            if let exitCode = TaskExitMarker.parse(from: text) {
+                return exitCode
+            }
+        }
+
+        return 0  // 未找到标记，回退到 0
     }
 
     private func applyMonitorInfo(_ infoMap: [Int: TerminalProcessInfo]) {

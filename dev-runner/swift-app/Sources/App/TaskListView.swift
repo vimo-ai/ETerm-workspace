@@ -51,8 +51,21 @@ struct TaskListView: View {
 
             Spacer()
 
-            // Running count
+            // Status summary
             let runningCount = tabManager.tabs.filter(\.isRunning).count
+            let failedCount = tabManager.tabs.filter { $0.taskState.isFailed }.count
+
+            if failedCount > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.error)
+                    Text("\(failedCount) failed")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(Theme.error)
+                }
+            }
+
             if runningCount > 0 {
                 HStack(spacing: 4) {
                     Circle()
@@ -119,7 +132,8 @@ struct TaskListView: View {
                         isSelected: tabManager.selectedTabId == tab.id,
                         onSelect: { tabManager.selectTab(tab) },
                         onClose: { tabManager.closeTab(tab) },
-                        onStop: { onStopTask(tab) }
+                        onStop: { onStopTask(tab) },
+                        onRestart: { onRestartTask(tab) }
                     )
                 }
             }
@@ -129,11 +143,18 @@ struct TaskListView: View {
     }
 
     private func onStopTask(_ tab: TerminalTab) {
-        // 通过 notification 让 ContentView 发送 interrupt
         NotificationCenter.default.post(
             name: .stopTask,
             object: nil,
             userInfo: ["terminalId": tab.terminalId]
+        )
+    }
+
+    private func onRestartTask(_ tab: TerminalTab) {
+        NotificationCenter.default.post(
+            name: .restartTask,
+            object: nil,
+            userInfo: ["tabId": tab.id.uuidString]
         )
     }
 }
@@ -146,6 +167,7 @@ private struct TaskRow: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     let onStop: () -> Void
+    let onRestart: () -> Void
 
     @State private var isHovered = false
 
@@ -162,20 +184,31 @@ private struct TaskRow: View {
                     .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
                     .lineLimit(1)
 
-                // Subtitle (task type)
-                if let taskKey = tab.taskKey {
-                    Text(taskKey.action.rawValue.capitalized)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(Theme.textMuted)
+                // Subtitle: action + duration
+                HStack(spacing: 6) {
+                    if let taskKey = tab.taskKey {
+                        Text(taskKey.action.rawValue.capitalized)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.textMuted)
+                    }
+
+                    if let durationText = tab.durationText {
+                        Text(durationText)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.textMuted)
+                    }
                 }
             }
 
             Spacer()
 
-            // Resource badges
-            if tab.isRunning {
+            // Resource badges (running or has ports)
+            if tab.isRunning || !tab.ports.isEmpty {
                 resourceBadges
             }
+
+            // Status badge for completed tasks
+            completedBadge
 
             // Actions
             if isHovered || isSelected {
@@ -197,31 +230,69 @@ private struct TaskRow: View {
         .onHover { isHovered = $0 }
     }
 
-    private var statusIndicator: some View {
-        Circle()
-            .fill(statusColor)
-            .frame(width: 8, height: 8)
-            .overlay(
-                Circle()
-                    .stroke(statusColor.opacity(0.5), lineWidth: tab.isRunning ? 2 : 0)
-                    .scaleEffect(tab.isRunning ? 1.5 : 1)
-                    .opacity(tab.isRunning ? 0.5 : 0)
-            )
-    }
+    // MARK: - Status Indicator
 
-    private var statusColor: Color {
-        if tab.isRunning {
-            return Theme.success
-        } else if tab.taskKey != nil {
-            return Theme.textMuted
-        } else {
-            return Theme.textMuted.opacity(0.5)
+    @ViewBuilder
+    private var statusIndicator: some View {
+        switch tab.taskState {
+        case .idle:
+            Circle()
+                .fill(Theme.textMuted.opacity(0.4))
+                .frame(width: 8, height: 8)
+
+        case .sent:
+            Circle()
+                .fill(Theme.warning)
+                .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(Theme.warning.opacity(0.4), lineWidth: 2)
+                        .scaleEffect(1.5)
+                )
+
+        case .running:
+            Circle()
+                .fill(Theme.success)
+                .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(Theme.success.opacity(0.4), lineWidth: 2)
+                        .scaleEffect(1.5)
+                        .opacity(0.5)
+                )
+
+        case .completed(let exitCode):
+            if exitCode == 0 {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.success)
+            } else {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.error)
+            }
         }
     }
 
+    // MARK: - Completed Badge
+
+    @ViewBuilder
+    private var completedBadge: some View {
+        if case .completed(let exitCode) = tab.taskState, exitCode != 0 {
+            Text("exit \(exitCode)")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(Theme.error)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Theme.error.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+    }
+
+    // MARK: - Resource Badges
+
     private var resourceBadges: some View {
         HStack(spacing: 4) {
-            // CPU
             if tab.cpuPercent > 0.1 {
                 Text(String(format: "%.0f%%", tab.cpuPercent))
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
@@ -232,7 +303,6 @@ private struct TaskRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
 
-            // Memory
             if tab.memoryMB > 0.1 {
                 Text(formatMemory(tab.memoryMB))
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
@@ -243,7 +313,6 @@ private struct TaskRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
 
-            // Port
             if let port = tab.ports.first {
                 HStack(spacing: 2) {
                     Text(":\(port)")
@@ -263,10 +332,26 @@ private struct TaskRow: View {
         }
     }
 
+    // MARK: - Action Buttons
+
     private var actionButtons: some View {
         HStack(spacing: 4) {
-            // Stop button (only for running tasks)
-            if tab.isRunning {
+            // Restart button (for completed tasks with a command)
+            if !tab.taskState.isActive && tab.commandString != nil && tab.taskKey != nil {
+                Button(action: onRestart) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.accent)
+                        .frame(width: 20, height: 20)
+                        .background(Theme.accent.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .help("Restart task")
+            }
+
+            // Stop button (only for active tasks)
+            if tab.taskState.isActive {
                 Button(action: onStop) {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 9))
@@ -308,4 +393,5 @@ private struct TaskRow: View {
 
 extension Notification.Name {
     static let stopTask = Notification.Name("stopTask")
+    static let restartTask = Notification.Name("restartTask")
 }

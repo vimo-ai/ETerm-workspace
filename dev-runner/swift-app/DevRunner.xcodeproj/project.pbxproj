@@ -19,6 +19,7 @@
 		9F47D5022F8F7B613C0C803C /* SimpleTerminalPoolWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59C0653889ED663A8EFFD8B2 /* SimpleTerminalPoolWrapper.swift */; };
 		A08E3239363195539C6E819C /* HTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B891420E46A6E7991690CA20 /* HTTPServer.swift */; };
 		ABA9DA8EFC31D171B05F615F /* TerminalTabManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 099B7143B1754B87AA29176D /* TerminalTabManager.swift */; };
+		AC7E2F91D4B83A6E1C9F0D52 /* TaskExitMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3A1B4E82F6C09D5A4E71B3 /* TaskExitMarker.swift */; };
 		B26602653DE989E10D8C3AFD /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A3A8E96E0520FC3FC2FDF1 /* SidebarView.swift */; };
 		B55F443987968511D52D651E /* SimpleRenderScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53573C4D40CFD5D88F13763F /* SimpleRenderScheduler.swift */; };
 		D5180AA62B72EF138BE8F494 /* TaskListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D83535AFE3017938FD00179A /* TaskListView.swift */; };
@@ -47,6 +48,7 @@
 		D83535AFE3017938FD00179A /* TaskListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskListView.swift; sourceTree = "<group>"; };
 		E6CB371B159B36207A6F4751 /* ProcessMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessMonitor.swift; sourceTree = "<group>"; };
 		EAD652872415BFB0FC606A6C /* SimpleTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleTerminalView.swift; sourceTree = "<group>"; };
+		7D3A1B4E82F6C09D5A4E71B3 /* TaskExitMarker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskExitMarker.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -75,6 +77,7 @@
 				59C0653889ED663A8EFFD8B2 /* SimpleTerminalPoolWrapper.swift */,
 				EAD652872415BFB0FC606A6C /* SimpleTerminalView.swift */,
 				0D1EB862796F417588E94A64 /* TerminalTabBar.swift */,
+				7D3A1B4E82F6C09D5A4E71B3 /* TaskExitMarker.swift */,
 				099B7143B1754B87AA29176D /* TerminalTabManager.swift */,
 				5D069949E99619F2984B79DE /* Libs */,
 			);
@@ -239,6 +242,7 @@
 				9F47D5022F8F7B613C0C803C /* SimpleTerminalPoolWrapper.swift in Sources */,
 				33198C8560728F3D91EADFF1 /* SimpleTerminalView.swift in Sources */,
 				D5180AA62B72EF138BE8F494 /* TaskListView.swift in Sources */,
+				AC7E2F91D4B83A6E1C9F0D52 /* TaskExitMarker.swift in Sources */,
 				5257BA8B202DAA969AED8077 /* TerminalTabBar.swift in Sources */,
 				ABA9DA8EFC31D171B05F615F /* TerminalTabManager.swift in Sources */,
 				64DA73E651A9C50C46905DE7 /* Theme.swift in Sources */,
