@@ -18,25 +18,53 @@ pub struct AdapterRegistry {
 impl AdapterRegistry {
     /// Detect project(s) at path
     ///
-    /// - If path itself is a project, returns just that project
-    /// - If path contains subprojects, returns all found (up to 3 levels deep)
+    /// - If path itself is a project, also probe immediate subdirectories
+    ///   and return root + all sub-projects found
+    /// - If path is not a project, search subdirectories (up to 3 levels deep)
     pub fn detect(path: &Path) -> Vec<Box<dyn RunnerAdapter>> {
         // First: check if path itself is a project
-        let mut direct: Vec<Box<dyn RunnerAdapter>> = Vec::new();
+        let mut results: Vec<Box<dyn RunnerAdapter>> = Vec::new();
         if let Some(adapter) = xcode::XcodeAdapter::detect(path) {
-            direct.push(adapter);
+            results.push(adapter);
         }
         if let Some(adapter) = node::NodeAdapter::detect(path) {
-            direct.push(adapter);
+            results.push(adapter);
         }
 
-        // If we found project(s) at the root, return them
-        if !direct.is_empty() {
-            return direct;
+        if results.is_empty() {
+            // Not a project, search subdirectories (up to 3 levels)
+            return Self::scan_with_depth(path, 3);
         }
 
-        // Otherwise, search subdirectories (up to 3 levels)
-        Self::scan_with_depth(path, 3)
+        // Root is a project — also probe immediate subdirectories
+        results.extend(Self::scan_immediate_children(path));
+
+        results
+    }
+
+    /// Scan only immediate subdirectories (depth 1) for projects
+    fn scan_immediate_children(path: &Path) -> Vec<Box<dyn RunnerAdapter>> {
+        let mut adapters: Vec<Box<dyn RunnerAdapter>> = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    let name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !name.starts_with('.')
+                        && name != "node_modules"
+                        && name != "target"
+                        && name != "build"
+                        && name != "DerivedData"
+                        && name != "Pods"
+                    {
+                        adapters.extend(Self::detect_all(&entry_path));
+                    }
+                }
+            }
+        }
+
+        adapters
     }
 
     /// Scan with limited depth
