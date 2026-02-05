@@ -45,8 +45,17 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/../app/target/release"
+          - "$(PROJECT_DIR)/Sources/Terminal/Libs"
         OTHER_LDFLAGS:
           - "-ldev_runner_app"
+          - "-lsugarloaf_ffi"
+          - "-lc++"
+          - "-framework Metal"
+          - "-framework MetalKit"
+          - "-framework QuartzCore"
+          - "-framework CoreGraphics"
+          - "-framework CoreText"
+          - "-framework AppKit"
         # Header search path
         SWIFT_OBJC_BRIDGING_HEADER: Sources/FFI/BridgingHeader.h
     dependencies: []

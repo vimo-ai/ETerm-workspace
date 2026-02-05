@@ -8,24 +8,44 @@ struct ContentView: View {
     @StateObject private var tabManager = TerminalTabManager()
     @State private var isDraggingOver = false
     @State private var showNewTaskSheet = false
+    @State private var isRightPanelCollapsed = false
 
     /// Control API Server (MCP 遥控器后端)
     @State private var apiServer: ControlAPIServer?
 
     var body: some View {
         HSplitView {
+            // 左栏：项目操作面板
             SidebarView(
                 isDraggingOver: $isDraggingOver,
                 onAddWorkspace: addWorkspace,
-                onDrop: handleDrop
+                onDrop: handleDrop,
+                onQuickAction: quickAction
             )
             .frame(minWidth: 160, idealWidth: 220, maxWidth: 400)
 
-            if runner.selectedProject != nil {
-                mainContent
-            } else {
-                emptyState
-            }
+            // 中栏：终端（全高度，始终可见）
+            centerContent
+
+            // 右栏：进程监控
+            ProcessMonitorView(
+                tabManager: tabManager,
+                isCollapsed: $isRightPanelCollapsed,
+                onNewTask: { showNewTaskSheet = true },
+                onStopTask: { tab in
+                    terminalController?.sendInterrupt(to: tab.terminalId)
+                },
+                onRestartTask: { tab in
+                    if let command = tab.commandString {
+                        restartTask(tab: tab, command: command)
+                    }
+                }
+            )
+            .frame(
+                minWidth: isRightPanelCollapsed ? 24 : 200,
+                idealWidth: isRightPanelCollapsed ? 24 : 230,
+                maxWidth: isRightPanelCollapsed ? 24 : 300
+            )
         }
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
@@ -55,66 +75,11 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Empty State
+    // MARK: - Center Content（终端全高度）
 
-    private var emptyState: some View {
-        VStack(spacing: 20) {
-            Image(systemName: runner.workspaces.isEmpty ? "cube.transparent" : "arrow.left")
-                .font(.system(size: 48, weight: .thin))
-                .foregroundColor(Theme.accent.opacity(0.5))
-
-            VStack(spacing: 8) {
-                Text(runner.workspaces.isEmpty ? "NO WORKSPACE" : "NO PROJECT SELECTED")
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundColor(Theme.textPrimary)
-                    .tracking(2)
-
-                Text(runner.workspaces.isEmpty ? "Add a workspace to begin" : "Select a project from the sidebar")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(Theme.textSecondary)
-            }
-
-            if runner.workspaces.isEmpty {
-                Button {
-                    addWorkspace()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus")
-                        Text("Add Workspace")
-                    }
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Theme.bgPrimary)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .background(Theme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.bgPrimary)
-    }
-
-    // MARK: - Main Content
-
-    private var mainContent: some View {
-        VSplitView {
-            // 任务列表（上部）
-            TaskListView(tabManager: tabManager, onNewTask: {
-                showNewTaskSheet = true
-            })
-            .frame(minHeight: 120, idealHeight: 180, maxHeight: 300)
-
-            // 终端输出（下部）
-            terminalArea
-        }
-        .background(Theme.bgPrimary)
-    }
-
-    private var terminalArea: some View {
+    private var centerContent: some View {
         VStack(spacing: 0) {
-            // Tab Bar (mini version - just shows selected)
+            // Mini bar（当前终端信息 + 快捷操作）
             if let selectedTab = tabManager.selectedTab {
                 miniTabBar(selectedTab)
 
@@ -123,18 +88,43 @@ struct ContentView: View {
                     .frame(height: 1)
             }
 
-            // Terminal View
-            MultiTerminalView(
-                workingDirectory: runner.selectedProject?.path ?? FileManager.default.currentDirectoryPath,
-                tabManager: tabManager
-            ) { controller in
-                DispatchQueue.main.async {
-                    self.terminalController = controller
-                    // 初始化 Control API Server
-                    setupAPIServer(controller: controller)
+            ZStack {
+                // Terminal View（始终渲染，确保 pool 初始化）
+                MultiTerminalView(
+                    workingDirectory: runner.selectedProject?.path ?? FileManager.default.currentDirectoryPath,
+                    tabManager: tabManager
+                ) { controller in
+                    DispatchQueue.main.async {
+                        self.terminalController = controller
+                        setupAPIServer(controller: controller)
+                    }
+                }
+
+                if tabManager.tabs.isEmpty {
+                    terminalEmptyState
                 }
             }
         }
+        .background(Theme.bgPrimary)
+    }
+
+    private var terminalEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.system(size: 32, weight: .thin))
+                .foregroundColor(Theme.textMuted.opacity(0.5))
+
+            Text("NO TASKS RUNNING")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(Theme.textMuted)
+                .tracking(1.5)
+
+            Text("Click ▶ on a project to start")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(Theme.textMuted.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bgPrimary)
     }
 
     private func miniTabBar(_ tab: TerminalTab) -> some View {
@@ -178,19 +168,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help("Clear terminal")
-
-            // Add new shell tab
-            Button {
-                if let project = runner.selectedProject {
-                    tabManager.createTab(cwd: project.path, title: "zsh", taskKey: nil)
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 9))
-                    .foregroundColor(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .help("New shell tab")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -288,6 +265,47 @@ struct ContentView: View {
         }
 
         return true
+    }
+
+    /// 快速操作（从侧边栏直接触发，自动解析 target/device）
+    private func quickAction(project: ProjectInfo, action: TaskAction) {
+        // 先选中项目（更新侧边栏高亮）
+        runner.selectProject(project)
+
+        if action == .shell {
+            tabManager.createTab(cwd: project.path, title: "zsh", taskKey: nil)
+            return
+        }
+
+        // 用 Stateless API 自动解析 target/device
+        guard let context = runner.resolveProjectContext(
+            projectPath: project.path,
+            targetName: nil,
+            deviceName: nil
+        ) else {
+            errorMessage = "No targets found for \(project.name)"
+            return
+        }
+
+        let taskKey = TaskKey(
+            projectPath: project.path,
+            action: action,
+            deviceId: context.device?.deviceId,
+            deviceName: context.device?.name
+        )
+
+        executeTask(projectPath: project.path, taskKey: taskKey) {
+            switch action {
+            case .build:
+                let options = BuildOptions(config: "Debug", deviceId: context.device?.deviceId)
+                return try runner.buildCommand(projectPath: project.path, target: context.target.name, options: options)
+            case .run:
+                let options = RunOptions(deviceId: context.device?.deviceId)
+                return try runner.runCommand(projectPath: project.path, target: context.target.name, options: options)
+            case .shell:
+                fatalError("unreachable")
+            }
+        }
     }
 
     /// 启动任务（从 NewTaskSheet 调用）

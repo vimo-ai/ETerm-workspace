@@ -32,6 +32,8 @@ struct SidebarView: View {
     @Binding var isDraggingOver: Bool
     var onAddWorkspace: () -> Void
     var onDrop: ([NSItemProvider]) -> Bool
+    /// 快速操作回调（项目, 动作）
+    var onQuickAction: ((ProjectInfo, TaskAction) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -169,27 +171,122 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func treeNodeRow(_ node: ProjectTreeNode) -> some View {
-        let isSelected = node.project.map { runner.selectedProject?.path == $0.path } ?? false
+        ProjectRowView(
+            node: node,
+            isSelected: node.project.map { runner.selectedProject?.path == $0.path } ?? false,
+            onSelect: { if let project = node.project { runner.selectProject(project) } },
+            onQuickAction: onQuickAction
+        )
+    }
+}
+
+// MARK: - Project Row (带 hover 快速操作)
+
+private struct ProjectRowView: View {
+    let node: ProjectTreeNode
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onQuickAction: ((ProjectInfo, TaskAction) -> Void)?
+
+    @State private var isHovered = false
+
+    var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: node.icon).font(.system(size: node.isProject ? 11 : 10)).foregroundColor(node.iconColor)
-            Text(node.name).font(.system(size: 12, design: .monospaced))
-                .foregroundColor(node.isProject ? (isSelected ? Theme.textPrimary : Theme.textSecondary) : Theme.textMuted).lineLimit(1)
+            Image(systemName: node.icon)
+                .font(.system(size: node.isProject ? 11 : 10))
+                .foregroundColor(node.iconColor)
+
+            Text(node.name)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(node.isProject ? (isSelected ? Theme.textPrimary : Theme.textSecondary) : Theme.textMuted)
+                .lineLimit(1)
+
             Spacer()
-            if let project = node.project {
-                Text(project.adapterType == "xcode" ? "Xcode" : "Node").font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundColor(node.iconColor).padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(node.iconColor.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+
+            // 快速操作按钮（仅项目节点 + hover 时显示）
+            if let project = node.project, isHovered {
+                quickActionButtons(project)
+            } else if let project = node.project, !isHovered {
+                // 非 hover 时显示运行时类型标签
+                Text(adapterLabel(project.adapterType))
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(node.iconColor)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(node.iconColor.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
             }
         }
-        .padding(.vertical, 3).padding(.trailing, 8).background(isSelected ? Theme.bgHover : Color.clear)
+        .padding(.vertical, 3).padding(.trailing, 8)
+        .background(isSelected ? Theme.bgHover : Color.clear)
         .contentShape(Rectangle())
-        .onTapGesture { if let project = node.project { runner.selectProject(project) } }
+        .onTapGesture(perform: onSelect)
+        .onHover { isHovered = $0 }
         .contextMenu {
+            if let project = node.project {
+                Button {
+                    onQuickAction?(project, .run)
+                } label: {
+                    Label("Run", systemImage: "play.fill")
+                }
+                Button {
+                    onQuickAction?(project, .build)
+                } label: {
+                    Label("Build", systemImage: "hammer.fill")
+                }
+                Divider()
+                Button {
+                    onQuickAction?(project, .shell)
+                } label: {
+                    Label("Open Shell", systemImage: "terminal")
+                }
+                Divider()
+            }
             Button {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: node.fullPath)
             } label: {
                 Label("在访达中打开", systemImage: "folder")
             }
+        }
+    }
+
+    private func quickActionButtons(_ project: ProjectInfo) -> some View {
+        HStack(spacing: 2) {
+            Button {
+                onQuickAction?(project, .run)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(Theme.success)
+                    .frame(width: 18, height: 18)
+                    .background(Theme.success.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .buttonStyle(.plain)
+            .help("Run")
+
+            Button {
+                onQuickAction?(project, .build)
+            } label: {
+                Image(systemName: "hammer.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(Theme.warning)
+                    .frame(width: 18, height: 18)
+                    .background(Theme.warning.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .buttonStyle(.plain)
+            .help("Build")
+        }
+    }
+
+    private func adapterLabel(_ adapterType: String) -> String {
+        switch adapterType {
+        case "xcode": return "Xcode"
+        case "node": return "Node"
+        case "cargo": return "Rust"
+        case "docker": return "Docker"
+        case "gradle": return "Android"
+        default: return adapterType.capitalized
         }
     }
 }

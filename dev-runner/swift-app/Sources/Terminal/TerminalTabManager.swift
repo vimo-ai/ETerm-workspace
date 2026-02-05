@@ -90,15 +90,14 @@ struct TerminalTab: Identifiable, Equatable {
     var ports: [UInt16] = []     // 监听端口
     var cpuPercent: Double = 0   // CPU 使用率 %
     var memoryMB: Double = 0     // 内存占用 MB
+    var pid: Int32 = 0           // 进程 PID
+    var processName: String = "" // 前台进程名
     var startedAt: Date?         // 任务开始时间
     var completedAt: Date?       // 任务结束时间
     var commandString: String?   // 上次执行的命令（用于 restart）
 
     // Task 关联
     var taskKey: TaskKey?        // 关联的任务（nil 表示普通 shell）
-
-    /// 向后兼容：isRunning 计算属性
-    var isRunning: Bool { taskState.isRunning }
 
     /// 任务耗时（秒）
     var duration: TimeInterval? {
@@ -120,6 +119,8 @@ struct TerminalTab: Identifiable, Equatable {
         lhs.id == rhs.id && lhs.title == rhs.title &&
         lhs.taskState == rhs.taskState && lhs.ports == rhs.ports &&
         lhs.taskKey == rhs.taskKey &&
+        lhs.pid == rhs.pid &&
+        lhs.processName == rhs.processName &&
         abs(lhs.cpuPercent - rhs.cpuPercent) < 0.1 &&
         abs(lhs.memoryMB - rhs.memoryMB) < 0.1
     }
@@ -196,7 +197,7 @@ class TerminalTabManager: ObservableObject {
     func findOrCreateTaskTab(cwd: String, taskKey: TaskKey) -> (tab: TerminalTab, isNew: Bool, wasRunning: Bool)? {
         // 查找已存在的 Tab
         if let existingTab = findTab(for: taskKey) {
-            let wasRunning = existingTab.isRunning
+            let wasRunning = existingTab.taskState.isActive
             selectedTabId = existingTab.id
             return (existingTab, false, wasRunning)
         }
@@ -373,6 +374,14 @@ class TerminalTabManager: ObservableObject {
                     tabs[i].memoryMB = info.memoryMB
                     needsUpdate = true
                 }
+                if tabs[i].pid != info.pid {
+                    tabs[i].pid = info.pid
+                    needsUpdate = true
+                }
+                if tabs[i].processName != info.processName {
+                    tabs[i].processName = info.processName
+                    needsUpdate = true
+                }
             }
         }
 
@@ -385,4 +394,11 @@ class TerminalTabManager: ObservableObject {
         pollTimer?.invalidate()
         monitor.stop()
     }
+}
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    static let stopTask = Notification.Name("stopTask")
+    static let restartTask = Notification.Name("restartTask")
 }

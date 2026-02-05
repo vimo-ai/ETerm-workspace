@@ -10,6 +10,6 @@ struct DevRunnerApp: App {
                 .environmentObject(runner)
         }
         .windowStyle(.automatic)
-        .defaultSize(width: 900, height: 600)
+        .defaultSize(width: 1100, height: 650)
     }
 }
