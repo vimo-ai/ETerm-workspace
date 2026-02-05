@@ -391,7 +391,7 @@ final class ControlAPIServer {
             deviceName: context.device?.name
         )
 
-        if let existingTab = tabManager.findTab(for: taskKey), existingTab.isRunning {
+        if let existingTab = tabManager.findTab(for: taskKey), existingTab.taskState.isActive {
             let info = ProcessMonitor().info(for: existingTab.terminalId)
             return .json(StartResponse(
                 success: true,
@@ -504,9 +504,11 @@ final class ControlAPIServer {
         let since = UInt64(req.queryParam("since") ?? "0") ?? 0
         let limit = Int(req.queryParam("limit") ?? "200") ?? 200
         let search = req.queryParam("search")
+        let isRegex = req.queryParam("regex") == "true"
+        let caseInsensitive = req.queryParam("case_insensitive") != "false" // 默认 true，向后兼容
 
         // 使用 LogBuffer 查询（Rust 层，已剥离 ANSI、处理 \r）
-        if let json = pool.queryLog(tab.terminalId, since: since, limit: limit, search: search) {
+        if let json = pool.queryLog(tab.terminalId, since: since, limit: limit, search: search, isRegex: isRegex, caseInsensitive: caseInsensitive) {
             // Rust 返回的 JSON 已是完整格式，直接透传
             return .rawJSON(json)
         }
@@ -597,16 +599,28 @@ final class ControlAPIServer {
 
         // 查找对应的 Tab
         if let tab = tabManager.tabs.first(where: { $0.taskKey?.projectPath == path && $0.taskKey?.action == .run }) {
-            if tab.isRunning {
+            switch tab.taskState {
+            case .idle:
+                return StatusResponse(status: "idle", pid: nil, uptimeSecs: nil, exitCode: nil)
+            case .sent:
+                return StatusResponse(status: "starting", pid: nil, uptimeSecs: nil, exitCode: nil)
+            case .running:
                 return StatusResponse(
                     status: "running",
-                    pid: Int32(tab.terminalId),  // 暂用 terminalId 代替
-                    uptimeSecs: nil,
+                    pid: tab.pid,
+                    uptimeSecs: tab.duration.map { Int($0) },
                     exitCode: nil
+                )
+            case .completed(let exitCode):
+                return StatusResponse(
+                    status: exitCode == 0 ? "success" : "failed",
+                    pid: nil,
+                    uptimeSecs: tab.duration.map { Int($0) },
+                    exitCode: Int(exitCode)
                 )
             }
         }
 
-        return StatusResponse(status: "stopped", pid: nil, uptimeSecs: nil, exitCode: nil)
+        return StatusResponse(status: "not_found", pid: nil, uptimeSecs: nil, exitCode: nil)
     }
 }

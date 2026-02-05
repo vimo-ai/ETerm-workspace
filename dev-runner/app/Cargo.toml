@@ -6,7 +6,7 @@ description = "DevRunner App Layer - Process management and FFI for standalone a
 license = "MIT"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 # Core library

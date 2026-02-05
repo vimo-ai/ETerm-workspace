@@ -310,15 +310,17 @@ class SimpleTerminalPoolWrapper {
     ///   - since: 返回 seq > since 的日志（0 = 全部）
     ///   - limit: 最多返回行数
     ///   - search: 可选的搜索过滤
+    ///   - isRegex: 是否将 search 作为正则表达式
+    ///   - caseInsensitive: 是否大小写不敏感
     /// - Returns: JSON 字符串，nil 表示 LogBuffer 未启用
-    func queryLog(_ terminalId: Int, since: UInt64 = 0, limit: Int = 200, search: String? = nil) -> String? {
+    func queryLog(_ terminalId: Int, since: UInt64 = 0, limit: Int = 200, search: String? = nil, isRegex: Bool = false, caseInsensitive: Bool = true) -> String? {
         guard let handle = handle, terminalId >= 0 else { return nil }
 
         let result: UnsafeMutablePointer<CChar>?
         if let search = search {
-            result = terminal_pool_query_log(handle, terminalId, since, limit, search)
+            result = terminal_pool_query_log(handle, terminalId, since, limit, search, isRegex, caseInsensitive)
         } else {
-            result = terminal_pool_query_log(handle, terminalId, since, limit, nil)
+            result = terminal_pool_query_log(handle, terminalId, since, limit, nil, isRegex, caseInsensitive)
         }
 
         guard let cStr = result else { return nil }

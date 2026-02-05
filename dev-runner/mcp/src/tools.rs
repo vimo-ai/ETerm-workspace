@@ -1,6 +1,9 @@
 //! MCP tool definitions and dispatcher
 
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
+use tracing::debug;
 
 use crate::client::{expand_tilde, DevRunnerClient};
 
@@ -118,7 +121,7 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "logs",
-            "description": "Get terminal output logs from a running project. Supports incremental polling via 'since' parameter: pass the 'next_seq' value from the previous response as 'since' to get only new lines. Supports text search filtering.",
+            "description": "Get terminal output logs from a running project. Supports incremental polling via 'since' parameter: pass the 'next_seq' value from the previous response as 'since' to get only new lines. Supports text search and regex filtering.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -137,7 +140,17 @@ pub fn get_tools() -> Vec<Value> {
                     },
                     "search": {
                         "type": "string",
-                        "description": "Filter logs to lines containing this text (case-sensitive)."
+                        "description": "Filter logs to lines matching this text or regex pattern."
+                    },
+                    "regex": {
+                        "type": "boolean",
+                        "description": "If true, treat 'search' as a regular expression pattern. Defaults to false (plain text search).",
+                        "default": false
+                    },
+                    "case_insensitive": {
+                        "type": "boolean",
+                        "description": "If true, search is case-insensitive. Defaults to true for backward compatibility.",
+                        "default": true
                     }
                 },
                 "required": ["path"]
@@ -163,6 +176,34 @@ pub fn get_tools() -> Vec<Value> {
                     }
                 },
                 "required": ["id"]
+            }
+        }),
+        json!({
+            "name": "wait_ready",
+            "description": "Wait for a service to become ready by polling a health check URL until it returns HTTP 200 or timeout is reached. Useful after starting a project to confirm the service is actually accepting requests, not just that the process has started.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the project directory. Used to identify which project this readiness check is for."
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Health check URL to poll (e.g. http://localhost:3000/health)."
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Maximum seconds to wait before giving up. Defaults to 30.",
+                        "default": 30
+                    },
+                    "interval": {
+                        "type": "integer",
+                        "description": "Polling interval in milliseconds. Defaults to 1000.",
+                        "default": 1000
+                    }
+                },
+                "required": ["path", "url"]
             }
         }),
     ]
@@ -227,6 +268,16 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             if let Some(search) = args.get("search").and_then(|v| v.as_str()) {
                 query.push(("search", search.to_string()));
             }
+            if let Some(regex) = args.get("regex").and_then(|v| v.as_bool()) {
+                if regex {
+                    query.push(("regex", "true".to_string()));
+                }
+            }
+            if let Some(ci) = args.get("case_insensitive").and_then(|v| v.as_bool()) {
+                if !ci {
+                    query.push(("case_insensitive", "false".to_string()));
+                }
+            }
 
             let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
             client.get("/api/v1/projects/logs", &query_refs)
@@ -239,8 +290,99 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             client.post("/api/v1/devices/boot", &json!({ "id": id }))
         }
 
+        "wait_ready" => {
+            let path = require_string(&args, "path")?;
+            let path = expand_tilde(&path);
+            let url = require_string(&args, "url")?;
+            let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
+            let interval_ms = args.get("interval").and_then(|v| v.as_u64()).unwrap_or(1000);
+            let interval_ms = interval_ms.max(50); // prevent hot spin
+
+            // Validate URL format upfront
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(format!("invalid URL '{}': must start with http:// or https://", url));
+            }
+
+            poll_until_ready(&path, &url, timeout_secs, interval_ms)
+        }
+
         _ => Err(format!("Unknown tool: {}", name)),
     }
+}
+
+/// Poll a URL until HTTP 200 or timeout. Runs entirely in the MCP process.
+fn poll_until_ready(path: &str, url: &str, timeout_secs: u64, interval_ms: u64) -> Result<Value, String> {
+    let deadline = Duration::from_secs(timeout_secs);
+    let interval = Duration::from_millis(interval_ms);
+    let start = Instant::now();
+
+    let mut last_status: u16 = 0;
+    let mut last_error: Option<String> = None;
+
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= deadline {
+            let mut result = json!({
+                "ready": false,
+                "path": path,
+                "elapsed_ms": elapsed.as_millis() as u64,
+                "status_code": last_status,
+                "error": "timeout"
+            });
+            if let Some(err) = &last_error {
+                result["last_error"] = json!(err);
+            }
+            return Ok(result);
+        }
+
+        // Per-request timeout bounded by remaining deadline
+        let remaining = deadline.saturating_sub(elapsed);
+        let req_timeout = remaining.min(Duration::from_secs(5));
+
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_connect(Some(req_timeout.min(Duration::from_secs(3))))
+                .timeout_global(Some(req_timeout))
+                .http_status_as_error(false)
+                .build(),
+        );
+
+        debug!("wait_ready: polling {}", url);
+
+        match agent.get(url).call() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                last_status = status;
+                last_error = None;
+                if status == 200 {
+                    return Ok(json!({
+                        "ready": true,
+                        "path": path,
+                        "elapsed_ms": start.elapsed().as_millis() as u64,
+                        "status_code": status
+                    }));
+                }
+                debug!("wait_ready: got HTTP {}, retrying", status);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                debug!("wait_ready: connection error: {}, retrying", msg);
+                last_error = Some(msg);
+            }
+        }
+
+        let elapsed = start.elapsed();
+        sleep_until(elapsed, deadline, interval);
+    }
+}
+
+/// Sleep for the polling interval, but not past the deadline.
+fn sleep_until(elapsed: Duration, deadline: Duration, interval: Duration) {
+    let remaining = deadline.saturating_sub(elapsed);
+    if remaining.is_zero() {
+        return;
+    }
+    std::thread::sleep(interval.min(remaining));
 }
 
 // -- Helpers --
