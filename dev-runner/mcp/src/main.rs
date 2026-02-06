@@ -16,6 +16,9 @@ use tracing::{debug, error, info};
 use client::DevRunnerClient;
 use protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 
+/// Maximum characters in a single MCP tool response (safety net)
+const MAX_RESPONSE_CHARS: usize = 12000;
+
 /// Transport protocol, auto-detected from first byte
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Protocol {
@@ -154,6 +157,20 @@ fn handle_request(client: &DevRunnerClient, request: &JsonRpcRequest) -> JsonRpc
             match tools::call_tool(client, name, args) {
                 Ok(result) => {
                     let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+                    // Safety net: truncate any overly large response
+                    let text = if text.len() > MAX_RESPONSE_CHARS {
+                        let truncated = &text[..MAX_RESPONSE_CHARS];
+                        // Find last newline to avoid cutting mid-line
+                        let cut_at = truncated.rfind('\n').unwrap_or(MAX_RESPONSE_CHARS);
+                        format!(
+                            "{}\n\n... [TRUNCATED: response was {} chars, limit {}. Use more specific queries or 'verbose: true' for full output.]",
+                            &text[..cut_at],
+                            text.len(),
+                            MAX_RESPONSE_CHARS
+                        )
+                    } else {
+                        text
+                    };
                     JsonRpcResponse::success(
                         id,
                         json!({

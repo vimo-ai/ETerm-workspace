@@ -347,9 +347,8 @@ final class DevRunner: ObservableObject {
                 self.selectedTarget = loadedTargets.first(where: { $0.targetType.lowercased().contains("app") })
                     ?? loadedTargets.first
 
-                // Smart auto-select device: prefer Mac > Simulator > Physical
-                self.selectedDevice = loadedDevices.first(where: { $0.isMac && $0.isAvailable })
-                    ?? loadedDevices.first(where: { $0.isSimulator && $0.isAvailable })
+                // Smart auto-select device: prefer Simulator > Physical > Mac
+                self.selectedDevice = loadedDevices.first(where: { $0.isSimulator && $0.isAvailable })
                     ?? loadedDevices.first(where: { $0.isAvailable })
             }
         }
@@ -484,13 +483,12 @@ final class DevRunner: ObservableObject {
             return nil
         }
 
-        // Resolve device: explicit name > mac > simulator > physical
+        // Resolve device: explicit name > simulator > physical > mac
         let device: DeviceInfo?
         if let name = deviceName {
             device = devices.first(where: { $0.name == name })
         } else {
-            device = devices.first(where: { $0.isMac && $0.isAvailable })
-                ?? devices.first(where: { $0.isSimulator && $0.isAvailable })
+            device = devices.first(where: { $0.isSimulator && $0.isAvailable })
                 ?? devices.first(where: { $0.isAvailable })
         }
 
@@ -515,6 +513,25 @@ final class DevRunner: ObservableObject {
                         }
                     } else {
                         return dev_runner_build_cmd(handle, pathPtr, targetPtr, nil, errorPtr)
+                    }
+                }
+            }
+        }
+        return try decode(CommandInfo.self, from: json)
+    }
+
+    /// Generate install command with explicit parameters (no global state dependency)
+    func installCommand(projectPath: String, target: String, options: RunOptions?) throws -> CommandInfo {
+        let optionsJson = try options.map { try encode($0) }
+        let json = try callFFI { errorPtr in
+            projectPath.withCString { pathPtr in
+                target.withCString { targetPtr in
+                    if let opts = optionsJson {
+                        return opts.withCString { optsPtr in
+                            dev_runner_install_cmd(handle, pathPtr, targetPtr, optsPtr, errorPtr)
+                        }
+                    } else {
+                        return dev_runner_install_cmd(handle, pathPtr, targetPtr, nil, errorPtr)
                     }
                 }
             }

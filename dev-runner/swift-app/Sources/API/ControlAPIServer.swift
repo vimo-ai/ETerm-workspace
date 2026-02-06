@@ -50,6 +50,20 @@ struct AddProjectResponse: Codable {
     let targets: [String]
 }
 
+struct BuildRequest: Codable {
+    let path: String
+    let target: String?
+    let device: String?
+    let config: String?
+    let clean: Bool?
+}
+
+struct RunRequest: Codable {
+    let path: String
+    let target: String?
+    let device: String?
+}
+
 struct StartRequest: Codable {
     let path: String
     let target: String?
@@ -73,6 +87,7 @@ struct StartResponse: Codable {
 struct StopRequest: Codable {
     let path: String
     let force: Bool?
+    let action: String? // "build" | "run"，不指定则停最活跃的
 }
 
 struct StopResponse: Codable {
@@ -87,12 +102,13 @@ struct StopResponse: Codable {
 
 struct StatusResponse: Codable {
     let status: String  // running | stopped | crashed
+    let action: String? // "build" | "run" — 当前查到的 tab 类型
     let pid: Int32?
     let uptimeSecs: Int?
     let exitCode: Int?
 
     enum CodingKeys: String, CodingKey {
-        case status, pid
+        case status, action, pid
         case uptimeSecs = "uptime_secs"
         case exitCode = "exit_code"
     }
@@ -235,7 +251,19 @@ final class ControlAPIServer {
             return await MainActor.run { self.handleRemoveProject(req) }
         }
 
-        // Start project
+        // Build project (compile only, auto-installs on simulator)
+        server.post("/api/v1/projects/build") { [weak self] req in
+            guard let self = self else { return .error(500, "Server not available") }
+            return await MainActor.run { self.handleBuild(req) }
+        }
+
+        // Run project (launch only, assumes already built)
+        server.post("/api/v1/projects/run") { [weak self] req in
+            guard let self = self else { return .error(500, "Server not available") }
+            return await MainActor.run { self.handleRun(req) }
+        }
+
+        // Start project (build + run combined)
         server.post("/api/v1/projects/start") { [weak self] req in
             guard let self = self else { return .error(500, "Server not available") }
             return await MainActor.run { self.handleStart(req) }
@@ -356,6 +384,162 @@ final class ControlAPIServer {
         }
     }
 
+    private func handleBuild(_ req: HTTPRequest) -> HTTPResponse {
+        guard let runner = runner,
+              let tabManager = tabManager,
+              let pool = terminalPool else {
+            return .error(500, "Server not configured")
+        }
+
+        guard let body: BuildRequest = req.jsonBody(BuildRequest.self) else {
+            return .error(400, "Invalid request body")
+        }
+
+        let path = normalizePath(body.path)
+
+        guard let (_, project) = findProject(path: path) else {
+            return .error(404, "Project not found: \(path)")
+        }
+
+        guard let context = runner.resolveProjectContext(
+            projectPath: project.path,
+            targetName: body.target,
+            deviceName: body.device
+        ) else {
+            return .error(400, "No targets found for project: \(project.name)")
+        }
+
+        let taskKey = TaskKey(
+            projectPath: project.path,
+            action: .build,
+            deviceId: context.device?.deviceId,
+            deviceName: context.device?.name
+        )
+
+        if let existingTab = tabManager.findTab(for: taskKey), existingTab.taskState.isActive {
+            return .json(StartResponse(
+                success: true,
+                pid: nil,
+                message: "\(project.name) is already building",
+                alreadyRunning: true
+            ))
+        }
+
+        guard let (tab, _, _) = tabManager.findOrCreateTaskTab(cwd: project.path, taskKey: taskKey) else {
+            return .error(500, "Failed to create terminal")
+        }
+
+        do {
+            let buildOpts = BuildOptions(
+                config: body.config ?? "Debug",
+                clean: body.clean ?? false,
+                deviceId: context.device?.deviceId
+            )
+            let buildCmd = try runner.buildCommand(
+                projectPath: project.path,
+                target: context.target.name,
+                options: buildOpts
+            )
+
+            pool.sendCommand(buildCmd.display, to: tab.terminalId)
+            tabManager.markTaskSent(tab.id, command: buildCmd.display)
+
+            return .json(StartResponse(
+                success: true,
+                pid: nil,
+                message: "\(project.name) building for \(context.device?.name ?? "default device")",
+                alreadyRunning: false
+            ))
+        } catch {
+            return .error(500, "Failed to generate command: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleRun(_ req: HTTPRequest) -> HTTPResponse {
+        guard let runner = runner,
+              let tabManager = tabManager,
+              let pool = terminalPool else {
+            return .error(500, "Server not configured")
+        }
+
+        guard let body: RunRequest = req.jsonBody(RunRequest.self) else {
+            return .error(400, "Invalid request body")
+        }
+
+        let path = normalizePath(body.path)
+
+        guard let (_, project) = findProject(path: path) else {
+            return .error(404, "Project not found: \(path)")
+        }
+
+        guard let context = runner.resolveProjectContext(
+            projectPath: project.path,
+            targetName: body.target,
+            deviceName: body.device
+        ) else {
+            return .error(400, "No targets found for project: \(project.name)")
+        }
+
+        let taskKey = TaskKey(
+            projectPath: project.path,
+            action: .run,
+            deviceId: context.device?.deviceId,
+            deviceName: context.device?.name
+        )
+
+        if let existingTab = tabManager.findTab(for: taskKey), existingTab.taskState.isActive {
+            let info = ProcessMonitor().info(for: existingTab.terminalId)
+            return .json(StartResponse(
+                success: true,
+                pid: info.pid,
+                message: "\(project.name) is already running",
+                alreadyRunning: true
+            ))
+        }
+
+        guard let (tab, _, _) = tabManager.findOrCreateTaskTab(cwd: project.path, taskKey: taskKey) else {
+            return .error(500, "Failed to create terminal")
+        }
+
+        do {
+            let runOpts = RunOptions(deviceId: context.device?.deviceId)
+
+            // Simulator 需要先 install 再 launch
+            var fullCommand: String
+            if let installCmd = try? runner.installCommand(
+                projectPath: project.path,
+                target: context.target.name,
+                options: runOpts
+            ) {
+                let runCmd = try runner.runCommand(
+                    projectPath: project.path,
+                    target: context.target.name,
+                    options: runOpts
+                )
+                fullCommand = "\(installCmd.display) && \(runCmd.display)"
+            } else {
+                let runCmd = try runner.runCommand(
+                    projectPath: project.path,
+                    target: context.target.name,
+                    options: runOpts
+                )
+                fullCommand = runCmd.display
+            }
+
+            pool.sendCommand(fullCommand, to: tab.terminalId)
+            tabManager.markTaskSent(tab.id, command: fullCommand)
+
+            return .json(StartResponse(
+                success: true,
+                pid: nil,
+                message: "\(project.name) launching on \(context.device?.name ?? "default device")",
+                alreadyRunning: false
+            ))
+        } catch {
+            return .error(500, "Failed to generate command: \(error.localizedDescription)")
+        }
+    }
+
     private func handleStart(_ req: HTTPRequest) -> HTTPResponse {
         guard let runner = runner,
               let tabManager = tabManager,
@@ -420,17 +604,26 @@ final class ControlAPIServer {
             )
 
             let runOpts = RunOptions(deviceId: context.device?.deviceId)
+
+            // 组合命令：build && install(如有) && run
+            var fullCommand = buildCmd.display
+            if let installCmd = try? runner.installCommand(
+                projectPath: project.path,
+                target: context.target.name,
+                options: runOpts
+            ) {
+                fullCommand += " && \(installCmd.display)"
+            }
             let runCmd = try runner.runCommand(
                 projectPath: project.path,
                 target: context.target.name,
                 options: runOpts
             )
-
-            // 组合命令：build && run
-            let fullCommand = "\(buildCmd.display) && \(runCmd.display)"
+            fullCommand += " && \(runCmd.display)"
 
             // 发送到终端
             pool.sendCommand(fullCommand, to: tab.terminalId)
+            tabManager.markTaskSent(tab.id, command: fullCommand)
 
             return .json(StartResponse(
                 success: true,
@@ -454,9 +647,27 @@ final class ControlAPIServer {
         }
 
         let path = normalizePath(body.path)
+        let actionFilter: TaskAction? = {
+            switch body.action {
+            case "build": return .build
+            case "run": return .run
+            default: return nil
+            }
+        }()
 
-        // 查找对应的 Tab
-        guard let tab = tabManager.tabs.first(where: { $0.taskKey?.projectPath == path && $0.taskKey?.action == .run }) else {
+        // 查找对应的 Tab（支持 action 过滤，不指定则匹配 build/run）
+        let matchingTabs = tabManager.tabs.filter { tab in
+            guard tab.taskKey?.projectPath == path else { return false }
+            if let action = actionFilter {
+                return tab.taskKey?.action == action
+            }
+            return tab.taskKey?.action == .build || tab.taskKey?.action == .run
+        }
+        guard let tab = matchingTabs.first(where: {
+            if case .running = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first(where: {
+            if case .sent = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first else {
             return .json(StopResponse(success: true, exitCode: 0))  // 已经停止
         }
 
@@ -479,7 +690,15 @@ final class ControlAPIServer {
             return .error(400, "Missing path parameter")
         }
 
-        let status = getProjectStatus(normalizePath(path))
+        let action: TaskAction? = {
+            switch req.queryParam("action") {
+            case "build": return .build
+            case "run": return .run
+            default: return nil
+            }
+        }()
+
+        let status = getProjectStatus(normalizePath(path), action: action)
         return .json(status)
     }
 
@@ -491,11 +710,27 @@ final class ControlAPIServer {
         }
 
         let normalized = normalizePath(path)
+        let actionFilter: TaskAction? = {
+            switch req.queryParam("action") {
+            case "build": return .build
+            case "run": return .run
+            default: return nil
+            }
+        }()
 
-        // 查找项目对应的终端 Tab
-        guard let tab = tabManager.tabs.first(where: {
-            $0.taskKey?.projectPath == normalized
-        }) else {
+        // 查找项目对应的终端 Tab（支持 action 过滤，优先最活跃）
+        let matchingTabs = tabManager.tabs.filter { tab in
+            guard tab.taskKey?.projectPath == normalized else { return false }
+            if let action = actionFilter {
+                return tab.taskKey?.action == action
+            }
+            return tab.taskKey?.action == .build || tab.taskKey?.action == .run
+        }
+        guard let tab = matchingTabs.first(where: {
+            if case .running = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first(where: {
+            if case .sent = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first else {
             // 没有运行的终端，返回空日志
             return .json(TerminalLogsResponse(lines: [], nextSeq: 0, hasMore: false, truncated: false))
         }
@@ -592,35 +827,57 @@ final class ControlAPIServer {
         return nil
     }
 
-    private func getProjectStatus(_ path: String) -> StatusResponse {
+    private func getProjectStatus(_ path: String, action: TaskAction? = nil) -> StatusResponse {
         guard let tabManager = tabManager else {
-            return StatusResponse(status: "stopped", pid: nil, uptimeSecs: nil, exitCode: nil)
+            return StatusResponse(status: "stopped", action: nil, pid: nil, uptimeSecs: nil, exitCode: nil)
         }
 
-        // 查找对应的 Tab
-        if let tab = tabManager.tabs.first(where: { $0.taskKey?.projectPath == path && $0.taskKey?.action == .run }) {
-            switch tab.taskState {
-            case .idle:
-                return StatusResponse(status: "idle", pid: nil, uptimeSecs: nil, exitCode: nil)
-            case .sent:
-                return StatusResponse(status: "starting", pid: nil, uptimeSecs: nil, exitCode: nil)
-            case .running:
-                return StatusResponse(
-                    status: "running",
-                    pid: tab.pid,
-                    uptimeSecs: tab.duration.map { Int($0) },
-                    exitCode: nil
-                )
-            case .completed(let exitCode):
-                return StatusResponse(
-                    status: exitCode == 0 ? "success" : "failed",
-                    pid: nil,
-                    uptimeSecs: tab.duration.map { Int($0) },
-                    exitCode: Int(exitCode)
-                )
+        // 查找匹配的 Tab（可选 action 过滤）
+        let matchingTabs = tabManager.tabs.filter { tab in
+            guard tab.taskKey?.projectPath == path else { return false }
+            if let action = action {
+                return tab.taskKey?.action == action
             }
+            // 无 action 过滤时，匹配 build 和 run
+            return tab.taskKey?.action == .build || tab.taskKey?.action == .run
         }
 
-        return StatusResponse(status: "not_found", pid: nil, uptimeSecs: nil, exitCode: nil)
+        // 优先返回最活跃的 tab: running > sent > completed > idle
+        let tab = matchingTabs.first(where: {
+            if case .running = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first(where: {
+            if case .sent = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first(where: {
+            if case .completed = $0.taskState { return true }; return false
+        }) ?? matchingTabs.first
+
+        guard let tab = tab else {
+            return StatusResponse(status: "not_found", action: nil, pid: nil, uptimeSecs: nil, exitCode: nil)
+        }
+
+        let actionStr = tab.taskKey?.action == .build ? "build" : "run"
+
+        switch tab.taskState {
+        case .idle:
+            return StatusResponse(status: "idle", action: actionStr, pid: nil, uptimeSecs: nil, exitCode: nil)
+        case .sent:
+            return StatusResponse(status: "starting", action: actionStr, pid: nil, uptimeSecs: nil, exitCode: nil)
+        case .running:
+            return StatusResponse(
+                status: "running",
+                action: actionStr,
+                pid: tab.pid,
+                uptimeSecs: tab.duration.map { Int($0) },
+                exitCode: nil
+            )
+        case .completed(let exitCode):
+            return StatusResponse(
+                status: exitCode == 0 ? "success" : "failed",
+                action: actionStr,
+                pid: nil,
+                uptimeSecs: tab.duration.map { Int($0) },
+                exitCode: Int(exitCode)
+            )
+        }
     }
 }

@@ -55,8 +55,62 @@ pub fn get_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "build",
+            "description": "Build (compile) a project. For iOS simulator targets, the app is automatically installed on the simulator after build. Does NOT launch the app. Use this for the typical iOS workflow: build → manually test in simulator.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the project directory."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Build target/scheme name. Optional, defaults to the first detected target."
+                    },
+                    "device": {
+                        "type": "string",
+                        "description": "Device name to build for (e.g. 'iPhone 16 Pro'). For Xcode projects only."
+                    },
+                    "config": {
+                        "type": "string",
+                        "description": "Build configuration. Defaults to 'Debug'.",
+                        "default": "Debug"
+                    },
+                    "clean": {
+                        "type": "boolean",
+                        "description": "Whether to perform a clean build. Defaults to false.",
+                        "default": false
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "run",
+            "description": "Launch an already-built app on a device. For simulators: uses simctl launch. For Mac: runs the executable directly. The app must be built first (use 'build' tool). The process stays alive to capture stdout/stderr.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the project directory."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Target/scheme name. Optional, defaults to the first detected target."
+                    },
+                    "device": {
+                        "type": "string",
+                        "description": "Device name to run on (e.g. 'iPhone 16 Pro'). For Xcode projects only."
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
             "name": "start",
-            "description": "Build and run a project (combined build + install + run). The command runs in a visible terminal within DevRunner UI. Idempotent: if already running, returns current status without restarting.",
+            "description": "Build and run a project (combined build + launch). Convenience shortcut equivalent to calling 'build' then 'run'. Idempotent: if already running, returns current status without restarting.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -96,6 +150,11 @@ pub fn get_tools() -> Vec<Value> {
                         "type": "string",
                         "description": "Absolute path to the project directory."
                     },
+                    "action": {
+                        "type": "string",
+                        "enum": ["build", "run"],
+                        "description": "Which task to stop: 'build' or 'run'. If omitted, stops the most active task (running > starting > any)."
+                    },
                     "force": {
                         "type": "boolean",
                         "description": "Force kill with SIGKILL instead of SIGINT. Defaults to false.",
@@ -107,13 +166,18 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "status",
-            "description": "Get the current status of a project: running, stopped, or crashed. Also returns pid, uptime, and exit code if applicable.",
+            "description": "Get the current status of a project: running, stopped, or crashed. Also returns action ('build'/'run'), pid, uptime, and exit code. Without 'action' filter, returns the most active task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "Absolute path to the project directory."
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["build", "run"],
+                        "description": "Filter to a specific task type: 'build' or 'run'. If omitted, returns the most active task."
                     }
                 },
                 "required": ["path"]
@@ -129,10 +193,15 @@ pub fn get_tools() -> Vec<Value> {
                         "type": "string",
                         "description": "Absolute path to the project directory."
                     },
+                    "action": {
+                        "type": "string",
+                        "enum": ["build", "run"],
+                        "description": "Which task's logs to read: 'build' or 'run'. If omitted, reads from the most active task."
+                    },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of log lines to return. Defaults to 200.",
-                        "default": 200
+                        "description": "Maximum number of log lines to return. Defaults to 50.",
+                        "default": 50
                     },
                     "since": {
                         "type": "integer",
@@ -151,6 +220,22 @@ pub fn get_tools() -> Vec<Value> {
                         "type": "boolean",
                         "description": "If true, search is case-insensitive. Defaults to true for backward compatibility.",
                         "default": true
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum characters in the response. Lines are trimmed from the beginning to fit. Set to 0 for unlimited. Defaults to 4000.",
+                        "default": 4000
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "If true, return full output without character limit. Overrides max_chars. Defaults to false.",
+                        "default": false
+                    },
+                    "anchor": {
+                        "type": "string",
+                        "enum": ["tail", "head"],
+                        "description": "Which end to keep when truncating: 'tail' keeps most recent lines (default), 'head' keeps earliest lines (useful for build start or initial errors).",
+                        "default": "tail"
                     }
                 },
                 "required": ["path"]
@@ -228,6 +313,26 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             client.delete("/api/v1/projects", &[("path", path.as_str())])
         }
 
+        "build" => {
+            let path = require_string(&args, "path")?;
+            let path = expand_tilde(&path);
+            let mut body = json!({ "path": path });
+            copy_optional_str(&args, &mut body, "target");
+            copy_optional_str(&args, &mut body, "device");
+            copy_optional_str(&args, &mut body, "config");
+            copy_optional_bool(&args, &mut body, "clean");
+            client.post("/api/v1/projects/build", &body)
+        }
+
+        "run" => {
+            let path = require_string(&args, "path")?;
+            let path = expand_tilde(&path);
+            let mut body = json!({ "path": path });
+            copy_optional_str(&args, &mut body, "target");
+            copy_optional_str(&args, &mut body, "device");
+            client.post("/api/v1/projects/run", &body)
+        }
+
         "start" => {
             let path = require_string(&args, "path")?;
             let path = expand_tilde(&path);
@@ -243,6 +348,7 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             let path = require_string(&args, "path")?;
             let path = expand_tilde(&path);
             let mut body = json!({ "path": path });
+            copy_optional_str(&args, &mut body, "action");
             copy_optional_bool(&args, &mut body, "force");
             client.post("/api/v1/projects/stop", &body)
         }
@@ -250,7 +356,12 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
         "status" => {
             let path = require_string(&args, "path")?;
             let path = expand_tilde(&path);
-            client.get("/api/v1/projects/status", &[("path", path.as_str())])
+            let mut query: Vec<(&str, String)> = vec![("path", path)];
+            if let Some(action) = args.get("action").and_then(|v| v.as_str()) {
+                query.push(("action", action.to_string()));
+            }
+            let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            client.get("/api/v1/projects/status", &query_refs)
         }
 
         "logs" => {
@@ -259,9 +370,14 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
 
             let mut query: Vec<(&str, String)> = vec![("path", path)];
 
-            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
-                query.push(("limit", limit.to_string()));
+            if let Some(action) = args.get("action").and_then(|v| v.as_str()) {
+                query.push(("action", action.to_string()));
             }
+
+            // Default limit is 50 for MCP (lower than HTTP API default)
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+            query.push(("limit", limit.to_string()));
+
             if let Some(since) = args.get("since").and_then(|v| v.as_u64()) {
                 query.push(("since", since.to_string()));
             }
@@ -280,7 +396,19 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             }
 
             let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            client.get("/api/v1/projects/logs", &query_refs)
+            let result = client.get("/api/v1/projects/logs", &query_refs)?;
+
+            // Apply max_chars truncation
+            let verbose = args.get("verbose").and_then(|v| v.as_bool()).unwrap_or(false);
+            let max_chars = if verbose {
+                0 // unlimited
+            } else {
+                args.get("max_chars").and_then(|v| v.as_u64()).unwrap_or(4000) as usize
+            };
+
+            let anchor = args.get("anchor").and_then(|v| v.as_str()).unwrap_or("tail");
+
+            Ok(truncate_log_response(result, max_chars, anchor))
         }
 
         "list_devices" => client.get("/api/v1/devices", &[]),
@@ -383,6 +511,79 @@ fn sleep_until(elapsed: Duration, deadline: Duration, interval: Duration) {
         return;
     }
     std::thread::sleep(interval.min(remaining));
+}
+
+/// Truncate log response to fit within character budget.
+/// `anchor` controls which end to keep: "tail" (default) or "head".
+fn truncate_log_response(mut result: Value, max_chars: usize, anchor: &str) -> Value {
+    if max_chars == 0 {
+        return result;
+    }
+
+    let lines = match result.get_mut("lines").and_then(|v| v.as_array_mut()) {
+        Some(lines) => lines,
+        None => return result,
+    };
+
+    let total_lines = lines.len();
+
+    // Calculate total character count
+    let total_chars: usize = lines.iter()
+        .filter_map(|v| v.as_str())
+        .map(|s| s.len() + 1) // +1 for newline equivalent
+        .sum();
+
+    if total_chars <= max_chars {
+        return result;
+    }
+
+    let (kept_lines, truncated_count) = if anchor == "head" {
+        // Keep lines from the head that fit within budget
+        let mut budget = max_chars;
+        let mut keep_until = 0;
+        for line in lines.iter() {
+            let line_cost = line.as_str().map(|s| s.len() + 1).unwrap_or(1);
+            if line_cost > budget {
+                break;
+            }
+            budget -= line_cost;
+            keep_until += 1;
+        }
+        let kept: Vec<Value> = lines.drain(..keep_until).collect();
+        let truncated = total_lines - keep_until;
+        (kept, truncated)
+    } else {
+        // Keep lines from the tail that fit within budget
+        let mut budget = max_chars;
+        let mut keep_from = lines.len();
+        for (i, line) in lines.iter().enumerate().rev() {
+            let line_cost = line.as_str().map(|s| s.len() + 1).unwrap_or(1);
+            if line_cost > budget {
+                break;
+            }
+            budget -= line_cost;
+            keep_from = i;
+        }
+        let truncated = keep_from;
+        let kept: Vec<Value> = lines.drain(keep_from..).collect();
+        (kept, truncated)
+    };
+
+    *lines = kept_lines;
+
+    // Add truncation metadata
+    result["truncated"] = json!(true);
+    result["truncated_lines"] = json!(truncated_count);
+    result["total_lines"] = json!(total_lines);
+    result["anchor"] = json!(anchor);
+    result["hint"] = json!(format!(
+        "Output truncated (showing {} from {}). Use 'verbose: true' for full output, 'anchor: \"{}\"' to see the other end, or 'search' to filter.",
+        anchor,
+        if anchor == "tail" { "head" } else { "tail" },
+        if anchor == "tail" { "head" } else { "tail" }
+    ));
+
+    result
 }
 
 // -- Helpers --
