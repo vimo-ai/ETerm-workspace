@@ -39,6 +39,7 @@ MEMEX_KIT="$ETERM_DIR/Plugins/MemexKit"
 LSP_KIT="$ETERM_DIR/Plugins/LspKit"
 MCP_ROUTER="$ETERM_ROOT/mcp-router/core"
 MCP_ROUTER_KIT="$ETERM_DIR/Plugins/MCPRouterKit"
+DEV_RUNNER="$ETERM_ROOT/dev-runner"
 
 # Colors
 GREEN='\033[0;32m'
@@ -250,6 +251,12 @@ build_sugarloaf() {
     log_info "Copying to ETerm/Libs/Sugarloaf..."
     mkdir -p "$ETERM_DIR/ETerm/Libs/Sugarloaf"
     cp "$STATIC_LIB" "$ETERM_DIR/ETerm/Libs/Sugarloaf/"
+
+    # 复制到 dev-runner（如果目录存在）
+    if [ -d "$DEV_RUNNER/swift-app/Sources/Terminal/Libs" ]; then
+        log_info "Copying to dev-runner..."
+        cp "$STATIC_LIB" "$DEV_RUNNER/swift-app/Sources/Terminal/Libs/"
+    fi
 
     log_success "sugarloaf-ffi built and deployed"
 }
