@@ -28,7 +28,7 @@ static DEVICE_CACHE: Mutex<DeviceCache> = Mutex::new(DeviceCache {
 });
 
 /// Platform type for filtering devices
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
     MacOS,
     IOS,

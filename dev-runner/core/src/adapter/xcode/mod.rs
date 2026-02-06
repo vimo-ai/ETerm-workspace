@@ -76,56 +76,57 @@ impl XcodeAdapter {
         }
     }
 
-    /// Detect platform from project.pbxproj (SDKROOT)
+    /// Detect platform from project.pbxproj (SDKROOT / SUPPORTED_PLATFORMS).
+    ///
+    /// Collects all platforms found and picks by priority (non-macOS preferred),
+    /// since macOS is the default fallback.
     fn detect_platform(project_path: &Path) -> Platform {
+        use std::collections::HashSet;
+
         let pbxproj_path = project_path.join("project.pbxproj");
         let content = match std::fs::read_to_string(&pbxproj_path) {
             Ok(c) => c,
-            Err(_) => return Platform::MacOS, // Default to macOS
+            Err(_) => return Platform::MacOS,
         };
 
-        // Look for SDKROOT to determine platform
+        let mut found: HashSet<Platform> = HashSet::new();
+
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("SDKROOT") {
+
+            if line.starts_with("SDKROOT") || line.starts_with("SUPPORTED_PLATFORMS") {
+                if line.contains("iphoneos") || line.contains("iphonesimulator") {
+                    found.insert(Platform::IOS);
+                }
                 if line.contains("appletvos") || line.contains("appletvsimulator") {
-                    return Platform::TvOS;
+                    found.insert(Platform::TvOS);
                 }
                 if line.contains("watchos") || line.contains("watchsimulator") {
-                    return Platform::WatchOS;
-                }
-                if line.contains("iphoneos") || line.contains("iphonesimulator") {
-                    return Platform::IOS;
+                    found.insert(Platform::WatchOS);
                 }
                 if line.contains("xros") || line.contains("xrsimulator") {
-                    return Platform::VisionOS;
+                    found.insert(Platform::VisionOS);
                 }
                 if line.contains("macosx") {
-                    return Platform::MacOS;
+                    found.insert(Platform::MacOS);
                 }
             }
         }
 
-        // Fallback: check SUPPORTED_PLATFORMS
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("SUPPORTED_PLATFORMS") {
-                if line.contains("appletvos") {
-                    return Platform::TvOS;
-                }
-                if line.contains("watchos") {
-                    return Platform::WatchOS;
-                }
-                if line.contains("iphoneos") {
-                    return Platform::IOS;
-                }
-                if line.contains("xros") {
-                    return Platform::VisionOS;
-                }
+        // Priority: non-macOS platforms first (macOS is the default fallback)
+        let priority = [
+            Platform::IOS,
+            Platform::TvOS,
+            Platform::WatchOS,
+            Platform::VisionOS,
+            Platform::MacOS,
+        ];
+        for p in priority {
+            if found.contains(&p) {
+                return p;
             }
         }
 
-        // Default to macOS
         Platform::MacOS
     }
 
@@ -141,8 +142,9 @@ impl XcodeAdapter {
         self.parse_schemes_via_xcodebuild().unwrap_or_default()
     }
 
-    /// Use xcodebuild -list to get schemes
+    /// Use xcodebuild -list to get schemes, filtered by native targets
     fn parse_schemes_via_xcodebuild(&self) -> Option<Vec<String>> {
+        use std::collections::HashSet;
         use std::process::Command;
 
         let output = Command::new("xcodebuild")
@@ -160,60 +162,113 @@ impl XcodeAdapter {
         let json: serde_json::Value =
             serde_json::from_slice(&output.stdout).ok()?;
 
-        let schemes = json
-            .get("project")?
+        let project = json.get("project")?;
+
+        // Collect native target names to filter out SPM dependency schemes
+        let targets: HashSet<String> = project
+            .get("targets")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let all_schemes: Vec<String> = project
             .get("schemes")?
             .as_array()?
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
 
-        Some(schemes)
+        // Only keep schemes whose name matches a native target
+        let filtered: Vec<String> = all_schemes
+            .iter()
+            .filter(|s| targets.contains(s.as_str()))
+            .cloned()
+            .collect();
+
+        // Fallback: if filtering removes everything, return all schemes
+        if filtered.is_empty() && !all_schemes.is_empty() {
+            return Some(all_schemes);
+        }
+
+        Some(filtered)
     }
 
-    /// Parse schemes from xcscheme files
+    /// Parse schemes from xcscheme files, filtering out SPM dependency schemes.
     ///
     /// Looks for .xcscheme files in:
     /// - {project_path}/xcshareddata/xcschemes/*.xcscheme (shared schemes)
     /// - {project_path}/xcuserdata/*/xcschemes/*.xcscheme (user schemes)
+    ///
+    /// Only includes schemes whose ReferencedContainer points to the current project.
     fn parse_schemes_from_files(&self) -> Vec<String> {
         let mut schemes = Vec::new();
 
-        // Parse shared schemes
-        let shared_schemes_dir = self.project_path.join("xcshareddata/xcschemes");
-        if let Ok(entries) = std::fs::read_dir(&shared_schemes_dir) {
+        // Build the container pattern to match: container:ProjectName.xcodeproj
+        let project_file_name = self
+            .project_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let container_pattern = format!("container:{}", project_file_name);
+
+        let collect_schemes = |dir: &Path, schemes: &mut Vec<String>| {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "xcscheme") {
-                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                        schemes.push(name.to_string());
+                if !path.extension().map_or(false, |ext| ext == "xcscheme") {
+                    continue;
+                }
+                let name = match path.file_stem().and_then(|s| s.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                if schemes.contains(&name) {
+                    continue; // Avoid duplicates
+                }
+
+                // Filter: check ReferencedContainer points to this project
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if content.contains(&container_pattern) {
+                        schemes.push(name);
                     }
                 }
             }
-        }
+        };
+
+        // Parse shared schemes
+        let shared_schemes_dir = self.project_path.join("xcshareddata/xcschemes");
+        collect_schemes(&shared_schemes_dir, &mut schemes);
 
         // Parse user schemes
         let userdata_dir = self.project_path.join("xcuserdata");
         if let Ok(users) = std::fs::read_dir(&userdata_dir) {
             for user_entry in users.filter_map(|e| e.ok()) {
                 let user_schemes_dir = user_entry.path().join("xcschemes");
-                if let Ok(entries) = std::fs::read_dir(&user_schemes_dir) {
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let path = entry.path();
-                        if path.extension().map_or(false, |ext| ext == "xcscheme") {
-                            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                                // Avoid duplicates
-                                if !schemes.contains(&name.to_string()) {
-                                    schemes.push(name.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
+                collect_schemes(&user_schemes_dir, &mut schemes);
             }
         }
 
         schemes
+    }
+
+    /// Check if the project supports Mac Catalyst (SUPPORTS_MACCATALYST = YES)
+    fn supports_catalyst(&self) -> bool {
+        let pbxproj_path = self.project_path.join("project.pbxproj");
+        let content = match std::fs::read_to_string(&pbxproj_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        content.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("SUPPORTS_MACCATALYST") && line.contains("YES")
+        })
     }
 
     /// Parse bundle ID from project.pbxproj
@@ -530,8 +585,8 @@ impl RunnerAdapter for XcodeAdapter {
             return devices;
         }
 
-        // For iOS projects that support Mac Catalyst, add Mac first
-        if self.platform == Platform::IOS {
+        // For iOS projects, only add Mac if the project supports Mac Catalyst
+        if self.platform == Platform::IOS && self.supports_catalyst() {
             devices.push(Device {
                 id: "mac".to_string(),
                 name: "My Mac".to_string(),
@@ -600,6 +655,34 @@ mod tests {
         assert!(cmd.args.contains(&"MyApp".to_string()));
     }
 
+    /// Helper: create a minimal .xcscheme file referencing the given project container
+    fn write_scheme(path: &Path, project_name: &str) {
+        let content = format!(
+            r#"<Scheme><BuildAction><BuildActionEntries><BuildActionEntry>
+            <BuildableReference BuildableIdentifier="primary"
+                BuildableName="{name}.app" BlueprintName="{name}"
+                ReferencedContainer="container:{name}.xcodeproj">
+            </BuildableReference>
+            </BuildActionEntry></BuildActionEntries></BuildAction></Scheme>"#,
+            name = project_name
+        );
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Helper: create an SPM dependency .xcscheme file (different container)
+    fn write_spm_scheme(path: &Path, package_name: &str) {
+        let content = format!(
+            r#"<Scheme><BuildAction><BuildActionEntries><BuildActionEntry>
+            <BuildableReference BuildableIdentifier="primary"
+                BuildableName="{name}.framework" BlueprintName="{name}"
+                ReferencedContainer="container:SourcePackages/checkouts/{name}">
+            </BuildableReference>
+            </BuildActionEntry></BuildActionEntries></BuildAction></Scheme>"#,
+            name = package_name
+        );
+        std::fs::write(path, content).unwrap();
+    }
+
     #[test]
     fn test_parse_schemes_shared() {
         let dir = tempdir().unwrap();
@@ -607,9 +690,9 @@ mod tests {
         let schemes_dir = xcodeproj.join("xcshareddata/xcschemes");
         std::fs::create_dir_all(&schemes_dir).unwrap();
 
-        // Create scheme files
-        std::fs::write(schemes_dir.join("MyApp.xcscheme"), "<Scheme></Scheme>").unwrap();
-        std::fs::write(schemes_dir.join("MyAppTests.xcscheme"), "<Scheme></Scheme>").unwrap();
+        // Create scheme files referencing this project
+        write_scheme(&schemes_dir.join("MyApp.xcscheme"), "MyApp");
+        write_scheme(&schemes_dir.join("MyAppTests.xcscheme"), "MyApp");
 
         let adapter = XcodeAdapter::new(xcodeproj);
         let schemes = adapter.parse_schemes();
@@ -626,8 +709,8 @@ mod tests {
         let user_schemes_dir = xcodeproj.join("xcuserdata/testuser.xcuserdatad/xcschemes");
         std::fs::create_dir_all(&user_schemes_dir).unwrap();
 
-        // Create user scheme file
-        std::fs::write(user_schemes_dir.join("UserScheme.xcscheme"), "<Scheme></Scheme>").unwrap();
+        // Create user scheme file referencing this project
+        write_scheme(&user_schemes_dir.join("UserScheme.xcscheme"), "MyApp");
 
         let adapter = XcodeAdapter::new(xcodeproj);
         let schemes = adapter.parse_schemes();
@@ -644,12 +727,12 @@ mod tests {
         // Create shared scheme
         let shared_dir = xcodeproj.join("xcshareddata/xcschemes");
         std::fs::create_dir_all(&shared_dir).unwrap();
-        std::fs::write(shared_dir.join("MyApp.xcscheme"), "<Scheme></Scheme>").unwrap();
+        write_scheme(&shared_dir.join("MyApp.xcscheme"), "MyApp");
 
         // Create same scheme in user data
         let user_dir = xcodeproj.join("xcuserdata/test.xcuserdatad/xcschemes");
         std::fs::create_dir_all(&user_dir).unwrap();
-        std::fs::write(user_dir.join("MyApp.xcscheme"), "<Scheme></Scheme>").unwrap();
+        write_scheme(&user_dir.join("MyApp.xcscheme"), "MyApp");
 
         let adapter = XcodeAdapter::new(xcodeproj);
         let schemes = adapter.parse_schemes();
@@ -657,6 +740,26 @@ mod tests {
         // Should not have duplicates
         assert_eq!(schemes.len(), 1);
         assert!(schemes.contains(&"MyApp".to_string()));
+    }
+
+    #[test]
+    fn test_parse_schemes_filters_spm() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        let schemes_dir = xcodeproj.join("xcshareddata/xcschemes");
+        std::fs::create_dir_all(&schemes_dir).unwrap();
+
+        // Project scheme (should be kept)
+        write_scheme(&schemes_dir.join("MyApp.xcscheme"), "MyApp");
+        // SPM dependency scheme (should be filtered out)
+        write_spm_scheme(&schemes_dir.join("HighlightSwift.xcscheme"), "HighlightSwift");
+
+        let adapter = XcodeAdapter::new(xcodeproj);
+        let schemes = adapter.parse_schemes_from_files();
+
+        assert_eq!(schemes.len(), 1);
+        assert!(schemes.contains(&"MyApp".to_string()));
+        assert!(!schemes.contains(&"HighlightSwift".to_string()));
     }
 
     #[test]
@@ -725,7 +828,7 @@ mod tests {
         let schemes_dir = xcodeproj.join("xcshareddata/xcschemes");
         std::fs::create_dir_all(&schemes_dir).unwrap();
 
-        std::fs::write(schemes_dir.join("MyApp.xcscheme"), "<Scheme></Scheme>").unwrap();
+        write_scheme(&schemes_dir.join("MyApp.xcscheme"), "MyApp");
 
         let adapter = XcodeAdapter::new(xcodeproj);
         let targets = adapter.targets();
@@ -878,5 +981,116 @@ mod tests {
         assert!(cmd.args.contains(&"spawn".to_string()));
         assert!(cmd.args.contains(&"log".to_string()));
         assert!(cmd.args.contains(&"stream".to_string()));
+    }
+
+    #[test]
+    fn test_detect_platform_multi_sdk() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        std::fs::create_dir(&xcodeproj).unwrap();
+
+        // pbxproj with both macOS and iOS SDKROOTs — iOS should win
+        let pbxproj_content = r#"
+            buildSettings = {
+                SDKROOT = macosx;
+            };
+            buildSettings = {
+                SDKROOT = iphoneos;
+            };
+        "#;
+        std::fs::write(xcodeproj.join("project.pbxproj"), pbxproj_content).unwrap();
+
+        let platform = XcodeAdapter::detect_platform(&xcodeproj);
+        assert_eq!(platform, Platform::IOS);
+    }
+
+    #[test]
+    fn test_detect_platform_macos_only() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        std::fs::create_dir(&xcodeproj).unwrap();
+
+        let pbxproj_content = r#"
+            buildSettings = {
+                SDKROOT = macosx;
+            };
+        "#;
+        std::fs::write(xcodeproj.join("project.pbxproj"), pbxproj_content).unwrap();
+
+        let platform = XcodeAdapter::detect_platform(&xcodeproj);
+        assert_eq!(platform, Platform::MacOS);
+    }
+
+    #[test]
+    fn test_detect_platform_supported_platforms_fallback() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        std::fs::create_dir(&xcodeproj).unwrap();
+
+        let pbxproj_content = r#"
+            buildSettings = {
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+            };
+        "#;
+        std::fs::write(xcodeproj.join("project.pbxproj"), pbxproj_content).unwrap();
+
+        let platform = XcodeAdapter::detect_platform(&xcodeproj);
+        assert_eq!(platform, Platform::IOS);
+    }
+
+    #[test]
+    fn test_devices_ios_no_catalyst() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        std::fs::create_dir(&xcodeproj).unwrap();
+
+        // iOS project without Catalyst
+        let pbxproj_content = "SDKROOT = iphoneos;";
+        std::fs::write(xcodeproj.join("project.pbxproj"), pbxproj_content).unwrap();
+
+        let adapter = XcodeAdapter::new(xcodeproj);
+        assert_eq!(adapter.platform, Platform::IOS);
+
+        let devices = adapter.devices();
+        // Should NOT contain "My Mac" (no Catalyst)
+        assert!(!devices.iter().any(|d| d.name == "My Mac"));
+    }
+
+    #[test]
+    fn test_devices_ios_catalyst() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        std::fs::create_dir(&xcodeproj).unwrap();
+
+        // iOS project with Catalyst support
+        let pbxproj_content = r#"
+            SDKROOT = iphoneos;
+            SUPPORTS_MACCATALYST = YES;
+        "#;
+        std::fs::write(xcodeproj.join("project.pbxproj"), pbxproj_content).unwrap();
+
+        let adapter = XcodeAdapter::new(xcodeproj);
+        assert_eq!(adapter.platform, Platform::IOS);
+
+        let devices = adapter.devices();
+        // Should contain "My Mac" (Catalyst enabled)
+        assert!(devices.iter().any(|d| d.name == "My Mac"));
+    }
+
+    #[test]
+    fn test_devices_macos_only_mac() {
+        let dir = tempdir().unwrap();
+        let xcodeproj = dir.path().join("MyApp.xcodeproj");
+        std::fs::create_dir(&xcodeproj).unwrap();
+
+        let pbxproj_content = "SDKROOT = macosx;";
+        std::fs::write(xcodeproj.join("project.pbxproj"), pbxproj_content).unwrap();
+
+        let adapter = XcodeAdapter::new(xcodeproj);
+        assert_eq!(adapter.platform, Platform::MacOS);
+
+        let devices = adapter.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "My Mac");
     }
 }
