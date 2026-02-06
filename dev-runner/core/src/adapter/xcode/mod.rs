@@ -425,12 +425,13 @@ impl RunnerAdapter for XcodeAdapter {
         match options.device.as_ref().map(|d| &d.device_type) {
             Some(DeviceType::Simulator) => {
                 let device = options.device.as_ref().unwrap();
-                // xcrun simctl launch --console <device-id> <bundle-id> [args...]
-                // --console captures app's stdout/stderr
+                // xcrun simctl launch --console-pty <device-id> <bundle-id> [args...]
+                // --console-pty uses a PTY to capture app's stdout/stderr (print() etc.)
+                // Note: --console (pipe mode) does NOT capture iOS app print() output
                 let mut cmd = Command::new("xcrun")
                     .arg("simctl")
                     .arg("launch")
-                    .arg("--console")
+                    .arg("--console-pty")
                     .arg(&device.id)
                     .arg(&bundle_id);
 
