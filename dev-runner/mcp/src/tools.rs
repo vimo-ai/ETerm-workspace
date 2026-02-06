@@ -56,7 +56,7 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "build",
-            "description": "Build (compile) a project. For iOS simulator targets, the app is automatically installed on the simulator after build. Does NOT launch the app. Use this for the typical iOS workflow: build → manually test in simulator.",
+            "description": "Build (compile) a project. Blocks until build completes. For iOS simulator targets, the app is automatically installed on the simulator after build. Does NOT launch the app.\n\nReturns: {success, duration_secs} on success, {success: false, error, duration_secs} on failure.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -88,7 +88,7 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "run",
-            "description": "Launch an already-built app on a device. For simulators: uses simctl launch. For Mac: runs the executable directly. The app must be built first (use 'build' tool). The process stays alive to capture stdout/stderr.",
+            "description": "Launch an already-built app on a device. Blocks until the app is running or launch fails. The app must be built first (use 'build' or 'start').\n\nReturns: {success, pid, duration_secs} on success, {success: false, error} on failure. Returns immediately with already_running: true if already running.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -110,7 +110,7 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "start",
-            "description": "Build and run a project (combined build + launch). Convenience shortcut equivalent to calling 'build' then 'run'. Idempotent: if already running, returns current status without restarting.",
+            "description": "Build, install, and launch a project — the primary tool for the 'code change → rebuild → test' workflow. Blocks until the entire chain completes. Equivalent to build + install + run in one call.\n\nReturns: {success, duration_secs} on success, {success: false, error} on failure with error logs included. Returns immediately with already_running: true if already running. Idempotent: safe to call repeatedly.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -321,7 +321,15 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             copy_optional_str(&args, &mut body, "device");
             copy_optional_str(&args, &mut body, "config");
             copy_optional_bool(&args, &mut body, "clean");
-            client.post("/api/v1/projects/build", &body)
+
+            // Trigger build
+            client.post("/api/v1/projects/build", &body)?;
+
+            // Poll until completion (running means build is still in progress)
+            let (status, elapsed) = poll_task_status(client, &path, Some("build"), false)?;
+
+            // Format and return result
+            format_task_result(client, &path, &status, elapsed, Some("build"))
         }
 
         "run" => {
@@ -330,7 +338,29 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             let mut body = json!({ "path": path });
             copy_optional_str(&args, &mut body, "target");
             copy_optional_str(&args, &mut body, "device");
-            client.post("/api/v1/projects/run", &body)
+
+            // Trigger run
+            let response = client.post("/api/v1/projects/run", &body)?;
+
+            // Check if already running
+            if let Some(true) = response.get("already_running").and_then(|v| v.as_bool()) {
+                let mut result = json!({
+                    "success": true,
+                    "already_running": true,
+                });
+                if let Some(pid) = response.get("pid") {
+                    if !pid.is_null() {
+                        result["pid"] = pid.clone();
+                    }
+                }
+                return Ok(result);
+            }
+
+            // Poll until running (running means app launched successfully)
+            let (status, elapsed) = poll_task_status(client, &path, Some("run"), true)?;
+
+            // Format and return result
+            format_task_result(client, &path, &status, elapsed, Some("run"))
         }
 
         "start" => {
@@ -341,7 +371,30 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             copy_optional_str(&args, &mut body, "device");
             copy_optional_str(&args, &mut body, "config");
             copy_optional_bool(&args, &mut body, "clean");
-            client.post("/api/v1/projects/start", &body)
+
+            // Trigger start
+            let response = client.post("/api/v1/projects/start", &body)?;
+
+            // Check if already running
+            if let Some(true) = response.get("already_running").and_then(|v| v.as_bool()) {
+                let mut result = json!({
+                    "success": true,
+                    "already_running": true,
+                });
+                if let Some(pid) = response.get("pid") {
+                    if !pid.is_null() {
+                        result["pid"] = pid.clone();
+                    }
+                }
+                return Ok(result);
+            }
+
+            // Poll with stability window: "running" for 15s+ = build succeeded, app is up.
+            // Catches fast build failures (syntax errors, missing deps) within the window.
+            let (status, elapsed) = poll_start_status(client, &path, 15)?;
+
+            // Format and return result
+            format_task_result(client, &path, &status, elapsed, Some("run"))
         }
 
         "stop" => {
@@ -584,6 +637,186 @@ fn truncate_log_response(mut result: Value, max_chars: usize, anchor: &str) -> V
     ));
 
     result
+}
+
+// -- Synchronous Task Polling Helpers --
+
+/// Poll `/api/v1/projects/status` until a terminal state is reached.
+/// Terminal states: "success", "failed", and "running" if `running_is_done` is true.
+/// Returns the final status JSON and elapsed duration.
+fn poll_task_status(
+    client: &DevRunnerClient,
+    path: &str,
+    action: Option<&str>,
+    running_is_done: bool,
+) -> Result<(Value, Duration), String> {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30 * 60); // 30 minute safety cap
+
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return Err(format!("timeout after {:.1}s", elapsed.as_secs_f64()));
+        }
+
+        let mut query: Vec<(&str, String)> = vec![("path", path.to_string())];
+        if let Some(action_str) = action {
+            query.push(("action", action_str.to_string()));
+        }
+        let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+        let status = client.get("/api/v1/projects/status", &query_refs)?;
+        let state = status.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+        debug!("poll_task_status: path={}, action={:?}, state={}, elapsed={:.1}s",
+               path, action, state, elapsed.as_secs_f64());
+
+        match state {
+            "success" | "failed" => return Ok((status, elapsed)),
+            "running" if running_is_done => return Ok((status, elapsed)),
+            "not_found" => return Err(format!("project not found: {}", path)),
+            "starting" | "sent" | "idle" | "running" => continue,
+            _ => continue,
+        }
+    }
+}
+
+/// Poll for `start` command: the chain (build && install && launch --console)
+/// keeps running indefinitely on success, so "running" IS the success state.
+/// Uses a stability window: after first seeing "running", keep polling for
+/// `stability_secs` more seconds to catch fast build failures before returning.
+fn poll_start_status(
+    client: &DevRunnerClient,
+    path: &str,
+    stability_secs: u64,
+) -> Result<(Value, Duration), String> {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30 * 60);
+    let stability = Duration::from_secs(stability_secs);
+    let mut running_since: Option<Instant> = None;
+
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return Err(format!("timeout after {:.1}s", elapsed.as_secs_f64()));
+        }
+
+        let query: Vec<(&str, String)> = vec![
+            ("path", path.to_string()),
+            ("action", "run".to_string()),
+        ];
+        let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+        let status = client.get("/api/v1/projects/status", &query_refs)?;
+        let state = status.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+        debug!("poll_start_status: state={}, running_for={:?}, elapsed={:.1}s",
+               state,
+               running_since.map(|t| t.elapsed()),
+               elapsed.as_secs_f64());
+
+        match state {
+            "success" | "failed" => return Ok((status, elapsed)),
+            "not_found" => return Err(format!("project not found: {}", path)),
+            "running" => {
+                let first = running_since.get_or_insert(Instant::now());
+                if first.elapsed() >= stability {
+                    // Stable running → build succeeded, app is up
+                    return Ok((status, elapsed));
+                }
+                // Still in stability window, keep polling for failures
+                continue;
+            }
+            _ => {
+                running_since = None; // Reset on non-running states
+                continue;
+            }
+        }
+    }
+}
+
+/// Fetch the last 50 lines of logs for error context.
+fn fetch_error_logs(
+    client: &DevRunnerClient,
+    path: &str,
+    action: Option<&str>,
+) -> String {
+    let mut query: Vec<(&str, String)> = vec![
+        ("path", path.to_string()),
+        ("limit", "50".to_string()),
+    ];
+    if let Some(action_str) = action {
+        query.push(("action", action_str.to_string()));
+    }
+    let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    match client.get("/api/v1/projects/logs", &query_refs) {
+        Ok(logs) => {
+            if let Some(lines) = logs.get("lines").and_then(|v| v.as_array()) {
+                let texts: Vec<String> = lines
+                    .iter()
+                    .filter_map(|line| line.get("text").and_then(|t| t.as_str()))
+                    .map(|s| s.to_string())
+                    .collect();
+                if texts.is_empty() {
+                    "No log output available".to_string()
+                } else {
+                    texts.join("\n")
+                }
+            } else {
+                "No log output available".to_string()
+            }
+        }
+        Err(e) => format!("Failed to fetch logs: {}", e),
+    }
+}
+
+/// Format the final success/failure response.
+fn format_task_result(
+    client: &DevRunnerClient,
+    path: &str,
+    status: &Value,
+    elapsed: Duration,
+    log_action: Option<&str>,
+) -> Result<Value, String> {
+    let state = status.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let duration_secs = elapsed.as_secs_f64();
+
+    if state == "success" || state == "running" {
+        let mut result = json!({
+            "success": true,
+            "duration_secs": duration_secs,
+        });
+
+        // Include pid if present and not null
+        if let Some(pid) = status.get("pid") {
+            if !pid.is_null() {
+                result["pid"] = pid.clone();
+            }
+        }
+
+        Ok(result)
+    } else {
+        let error = fetch_error_logs(client, path, log_action);
+        let mut result = json!({
+            "success": false,
+            "error": error,
+            "duration_secs": duration_secs,
+        });
+
+        // Check both "exitCode" and "exit_code" keys
+        if let Some(exit_code) = status.get("exitCode").or_else(|| status.get("exit_code")) {
+            if !exit_code.is_null() {
+                result["exit_code"] = exit_code.clone();
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 // -- Helpers --

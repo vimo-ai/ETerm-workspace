@@ -9,6 +9,8 @@ mod protocol;
 mod tools;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::sync::{mpsc, Arc};
+use std::thread;
 
 use serde_json::json;
 use tracing::{debug, error, info};
@@ -40,11 +42,9 @@ fn main() {
 
     info!("dev-runner-mcp v{} starting", env!("CARGO_PKG_VERSION"));
 
-    let client = DevRunnerClient::new();
+    let client = Arc::new(DevRunnerClient::new());
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());
-    let stdout = io::stdout();
-    let mut writer = stdout.lock();
 
     // Auto-detect protocol from first byte
     let protocol = match detect_protocol(&mut reader) {
@@ -57,6 +57,20 @@ fn main() {
             return;
         }
     };
+
+    // Channel for serialized JSON responses → dedicated writer thread
+    let (tx, rx) = mpsc::channel::<String>();
+
+    // Writer thread owns stdout exclusively
+    let writer_protocol = protocol;
+    let writer_handle = thread::spawn(move || {
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+        for json_str in rx {
+            write_raw(&mut writer, &json_str, writer_protocol);
+        }
+        debug!("Writer thread exiting");
+    });
 
     loop {
         let message = match protocol {
@@ -79,7 +93,7 @@ fn main() {
                 error!("Failed to parse JSON-RPC request: {}", e);
                 let resp =
                     JsonRpcResponse::error(None, JsonRpcError::parse_error(&e.to_string()));
-                write_message(&mut writer, &resp, protocol);
+                send_response(&tx, &resp);
                 continue;
             }
         };
@@ -92,12 +106,20 @@ fn main() {
             continue;
         }
 
-        // Dispatch request
-        let response = handle_request(&client, &request);
-
-        debug!("→ response for {} (id={:?})", request.method, request.id);
-        write_message(&mut writer, &response, protocol);
+        // Dispatch request in a separate thread so blocking tools
+        // (build, run, start) don't prevent other requests from being handled.
+        let client = Arc::clone(&client);
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let response = handle_request(&client, &request);
+            debug!("→ response for {} (id={:?})", request.method, request.id);
+            send_response(&tx, &response);
+        });
     }
+
+    // Drop sender to signal writer thread to exit, then wait for it
+    drop(tx);
+    let _ = writer_handle.join();
 }
 
 /// Handle a JSON-RPC request and return a response
@@ -287,8 +309,8 @@ fn read_content_length_message(reader: &mut impl BufRead) -> Option<String> {
     }
 }
 
-/// Write a JSON-RPC response using the detected protocol.
-fn write_message(writer: &mut impl Write, response: &JsonRpcResponse, protocol: Protocol) {
+/// Serialize a JSON-RPC response and send it through the channel to the writer thread.
+fn send_response(tx: &mpsc::Sender<String>, response: &JsonRpcResponse) {
     let json = match serde_json::to_string(response) {
         Ok(j) => j,
         Err(e) => {
@@ -296,7 +318,11 @@ fn write_message(writer: &mut impl Write, response: &JsonRpcResponse, protocol: 
             return;
         }
     };
+    let _ = tx.send(json);
+}
 
+/// Write a pre-serialized JSON string to stdout with protocol framing.
+fn write_raw(writer: &mut impl Write, json: &str, protocol: Protocol) {
     let result = match protocol {
         Protocol::Line => {
             writeln!(writer, "{}", json)
