@@ -110,7 +110,7 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "start",
-            "description": "Build, install, and launch a project — the primary tool for the 'code change → rebuild → test' workflow. Blocks until the entire chain completes. Equivalent to build + install + run in one call.\n\nReturns: {success, duration_secs} on success, {success: false, error} on failure with error logs included. Returns immediately with already_running: true if already running. Idempotent: safe to call repeatedly.",
+            "description": "Build, install, and launch a project — the primary tool for the 'code change → rebuild → test' workflow. Blocks until the entire chain completes. Equivalent to build + install + run in one call.\n\nReturns: {success, duration_secs} on success, {success: false, error} on failure with error logs included. If already running, automatically stops and restarts. Idempotent: safe to call repeatedly.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -375,18 +375,11 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             // Trigger start
             let response = client.post("/api/v1/projects/start", &body)?;
 
-            // Check if already running
+            // If already running, stop first then restart
             if let Some(true) = response.get("already_running").and_then(|v| v.as_bool()) {
-                let mut result = json!({
-                    "success": true,
-                    "already_running": true,
-                });
-                if let Some(pid) = response.get("pid") {
-                    if !pid.is_null() {
-                        result["pid"] = pid.clone();
-                    }
-                }
-                return Ok(result);
+                client.post("/api/v1/projects/stop", &json!({ "path": path }))?;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let _retry = client.post("/api/v1/projects/start", &body)?;
             }
 
             // Poll with stability window: "running" for 15s+ = build succeeded, app is up.
