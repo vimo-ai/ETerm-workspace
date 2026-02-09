@@ -249,10 +249,10 @@ build_sugarloaf() {
         exit 1
     fi
 
-    # 复制到 ETerm/Libs/Sugarloaf
-    log_info "Copying to ETerm/Libs/Sugarloaf..."
-    mkdir -p "$ETERM_DIR/ETerm/Libs/Sugarloaf"
-    cp "$STATIC_LIB" "$ETERM_DIR/ETerm/Libs/Sugarloaf/"
+    # 复制到 ETerm/ETerm/Libs/Sugarloaf（Xcode PROJECT_DIR 引用路径）
+    log_info "Copying to ETerm/ETerm/Libs/Sugarloaf..."
+    mkdir -p "$ETERM_DIR/ETerm/ETerm/Libs/Sugarloaf"
+    cp "$STATIC_LIB" "$ETERM_DIR/ETerm/ETerm/Libs/Sugarloaf/"
 
     # 复制到 dev-runner（如果目录存在）
     if [ -d "$DEV_RUNNER/swift-app/Sources/Terminal/Libs" ]; then
