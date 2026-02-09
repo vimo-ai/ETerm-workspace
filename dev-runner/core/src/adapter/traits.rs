@@ -122,10 +122,17 @@ impl Command {
         self
     }
 
-    /// Convert to a displayable string
+    /// Convert to a displayable string (shell-safe)
     pub fn to_string(&self) -> String {
         let mut parts = vec![self.program.clone()];
-        parts.extend(self.args.clone());
+        for arg in &self.args {
+            if arg.contains(' ') || arg.contains('\'') || arg.contains('"') || arg.contains('$') || arg.contains('`') || arg.contains('\\') || arg.contains('(') || arg.contains(')') {
+                // Shell-escape: wrap in single quotes, escape existing single quotes
+                parts.push(format!("'{}'", arg.replace('\'', "'\\''")));
+            } else {
+                parts.push(arg.clone());
+            }
+        }
         parts.join(" ")
     }
 }

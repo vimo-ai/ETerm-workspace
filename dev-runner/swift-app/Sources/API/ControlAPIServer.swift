@@ -504,26 +504,37 @@ final class ControlAPIServer {
         do {
             let runOpts = RunOptions(deviceId: context.device?.deviceId)
 
-            // Simulator 需要先 install 再 launch
+            // Simulator 需要先 install 再 terminate 再 launch
             var fullCommand: String
+            let runCmd = try runner.runCommand(
+                projectPath: project.path,
+                target: context.target.name,
+                options: runOpts
+            )
             if let installCmd = try? runner.installCommand(
                 projectPath: project.path,
                 target: context.target.name,
                 options: runOpts
             ) {
-                let runCmd = try runner.runCommand(
-                    projectPath: project.path,
-                    target: context.target.name,
-                    options: runOpts
-                )
-                fullCommand = "\(installCmd.display) && \(runCmd.display)"
+                fullCommand = installCmd.display
             } else {
-                let runCmd = try runner.runCommand(
-                    projectPath: project.path,
-                    target: context.target.name,
-                    options: runOpts
-                )
+                fullCommand = ""
+            }
+            // Simulator: terminate 旧实例，确保 --console-pty 能建立 PTY 连接
+            if let deviceId = context.device?.deviceId,
+               let bundleId = project.bundleId,
+               context.device?.isSimulator == true {
+                let terminateCmd = "(xcrun simctl terminate \(deviceId) \(bundleId) 2>/dev/null || true)"
+                if fullCommand.isEmpty {
+                    fullCommand = terminateCmd
+                } else {
+                    fullCommand += " && \(terminateCmd)"
+                }
+            }
+            if fullCommand.isEmpty {
                 fullCommand = runCmd.display
+            } else {
+                fullCommand += " && \(runCmd.display)"
             }
 
             pool.sendCommand(fullCommand, to: tab.terminalId)
@@ -605,7 +616,7 @@ final class ControlAPIServer {
 
             let runOpts = RunOptions(deviceId: context.device?.deviceId)
 
-            // 组合命令：build && install(如有) && run
+            // 组合命令：build && install(如有) && terminate(如有) && run
             var fullCommand = buildCmd.display
             if let installCmd = try? runner.installCommand(
                 projectPath: project.path,
@@ -613,6 +624,12 @@ final class ControlAPIServer {
                 options: runOpts
             ) {
                 fullCommand += " && \(installCmd.display)"
+            }
+            // Simulator: terminate 旧实例，确保 --console-pty 能建立 PTY 连接
+            if let deviceId = context.device?.deviceId,
+               let bundleId = project.bundleId,
+               context.device?.isSimulator == true {
+                fullCommand += " && (xcrun simctl terminate \(deviceId) \(bundleId) 2>/dev/null || true)"
             }
             let runCmd = try runner.runCommand(
                 projectPath: project.path,

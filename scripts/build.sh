@@ -15,6 +15,7 @@
 #   ./scripts/build.sh mcp-router # 只编译 mcp-router-core
 #   ./scripts/build.sh agent     # 只编译 vimo-agent
 #   ./scripts/build.sh pty-daemon # 只编译 pty-daemon
+#   ./scripts/build.sh dev-runner # 只编译 dev-runner FFI
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
 #   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
@@ -329,6 +330,31 @@ build_pty_daemon() {
 }
 
 # ============================================================================
+# 编译 dev-runner FFI
+# ============================================================================
+build_dev_runner() {
+    log_info "Building dev-runner FFI..."
+
+    # dev-runner/app 是独立 workspace，需要单独编译
+    cd "$DEV_RUNNER/app"
+    cargo build --release
+
+    local DYLIB="$DEV_RUNNER/app/target/release/libdev_runner_app.dylib"
+
+    if [ ! -f "$DYLIB" ]; then
+        log_error "dev-runner dylib not found: $DYLIB"
+        exit 1
+    fi
+
+    # 复制到 swift-app/Libs/
+    log_info "Copying to swift-app/Libs/..."
+    mkdir -p "$DEV_RUNNER/swift-app/Libs"
+    cp "$DYLIB" "$DEV_RUNNER/swift-app/Libs/"
+
+    log_success "dev-runner FFI built and deployed"
+}
+
+# ============================================================================
 # 编译 mcp-router-core
 # ============================================================================
 build_mcp_router() {
@@ -470,6 +496,9 @@ main() {
         pty-daemon)
             build_pty_daemon
             ;;
+        dev-runner)
+            build_dev_runner
+            ;;
         plugins)
             build_etermkit  # 插件依赖 ETermKit，先确保它已构建
             build_plugins
@@ -490,11 +519,12 @@ main() {
             build_mcp_router
             build_agent
             build_pty_daemon
+            build_dev_runner
             build_plugins
             ;;
         *)
             log_error "Unknown target: $TARGET"
-            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|agent|pty-daemon|plugins|lint|check|all]"
+            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|agent|pty-daemon|dev-runner|plugins|lint|check|all]"
             exit 1
             ;;
     esac
