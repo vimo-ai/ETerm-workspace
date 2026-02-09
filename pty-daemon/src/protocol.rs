@@ -4,6 +4,7 @@
 //! 消息格式：4 字节 length (big-endian) + JSON payload
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// 协议版本
@@ -22,6 +23,9 @@ pub enum Request {
         /// ETerm terminal_id，reattach 时用于精确映射
         #[serde(default)]
         terminal_id: Option<u32>,
+        /// 额外的环境变量（如 ZDOTDIR, ETERM_SHELL_DIR）
+        #[serde(default)]
+        envs: Option<HashMap<String, String>>,
     },
 
     /// Attach 到已有 session（触发 fd passing）

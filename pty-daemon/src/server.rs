@@ -203,7 +203,7 @@ impl Server {
                         eprintln!("[daemon] kqueue: fd={fd} EV_EOF (filter={ev_filter}, flags=0x{ev_flags:x}, data={ev_data})");
                         self.handle_client_disconnect(kq, fd);
                     } else {
-                        eprintln!("[daemon] kqueue: fd={fd} data ready (filter={ev_filter}, flags=0x{ev_flags:x}, data={ev_data})");
+                        // eprintln!("[daemon] kqueue: fd={fd} data ready (filter={ev_filter}, flags=0x{ev_flags:x}, data={ev_data})");
                         self.handle_client_data(kq, fd)?;
                     }
                 } else if ev.filter == libc::EVFILT_PROC {
@@ -336,7 +336,8 @@ impl Server {
                 rows,
                 working_dir,
                 terminal_id,
-            } => self.handle_create(kq, shell, cols, rows, working_dir, terminal_id),
+                envs,
+            } => self.handle_create(kq, shell, cols, rows, working_dir, terminal_id, envs.as_ref()),
 
             Request::Attach { session_id } => self.handle_attach(kq, client_fd, session_id),
 
@@ -377,9 +378,10 @@ impl Server {
         rows: u16,
         working_dir: Option<String>,
         terminal_id: Option<u32>,
+        envs: Option<&HashMap<String, String>>,
     ) -> Response {
         let shell_str = shell.as_deref().unwrap_or("");
-        match pty::create_pty(shell_str, cols, rows, working_dir.as_deref()) {
+        match pty::create_pty(shell_str, cols, rows, working_dir.as_deref(), terminal_id, envs) {
             Ok(pty_pair) => {
                 let master_fd = pty_pair.master_fd;
                 let child_pid = pty_pair.child_pid;
@@ -652,7 +654,7 @@ impl Server {
                 let data = &buf[..n as usize];
                 session.shared_ring.write(data);
                 session.last_active = Instant::now();
-                eprintln!("[daemon] session {session_id} read {n} bytes from master_fd, shared_ring now {} bytes", session.shared_ring.len());
+                // eprintln!("[daemon] session {session_id} read {n} bytes from master_fd, shared_ring now {} bytes", session.shared_ring.len());
                 if session.state == SessionState::Idle {
                     session.promote_to_active();
                 }

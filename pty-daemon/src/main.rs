@@ -142,6 +142,7 @@ fn cmd_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 .ok()
                 .map(|p| p.to_string_lossy().into_owned()),
             terminal_id: None,
+            envs: None,
         },
     )?;
 

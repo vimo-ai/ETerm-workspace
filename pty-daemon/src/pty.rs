@@ -1,5 +1,6 @@
 //! PTY 创建模块 — raw libc，不依赖 teletypewriter crate
 
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
@@ -115,6 +116,8 @@ pub fn create_pty(
     cols: u16,
     rows: u16,
     working_dir: Option<&str>,
+    terminal_id: Option<u32>,
+    envs: Option<&HashMap<String, String>>,
 ) -> io::Result<PtyPair> {
     let mut master: libc::c_int = 0;
     let mut child: libc::c_int = 0;
@@ -161,6 +164,22 @@ pub fn create_pty(
     builder.env("COLORTERM", "truecolor");
     builder.env("LC_CTYPE", "UTF-8");
     builder.env("LANG", "en_US.UTF-8");
+
+    builder.env("ETERM_SHELL_INTEGRATION", "1");
+    builder.env("TERM_PROGRAM", "ETerm");
+
+    if let Some(tid) = terminal_id {
+        let tid_str = tid.to_string();
+        builder.env("ETERM_TERMINAL_ID", &tid_str);
+        builder.env("ETERM_SESSION_ID", &tid_str);
+    }
+
+    // Apply extra environment variables from client (ZDOTDIR, ETERM_SHELL_DIR, etc.)
+    if let Some(extra_envs) = envs {
+        for (key, value) in extra_envs {
+            builder.env(key, value);
+        }
+    }
 
     if let Some(dir) = working_dir {
         let path = std::path::Path::new(dir);
