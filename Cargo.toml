@@ -9,6 +9,7 @@ members = [
     "ai-cli-session-collector",
     "ai-cli-session-db",
     "memex/memex-rs",
+    "pty-daemon",
 ]
 # 独立项目，不加入 workspace
 exclude = [

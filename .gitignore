@@ -16,6 +16,9 @@ Icon?
 *.log
 *.tmp
 
+# Local dev scripts
+scripts/deploy-tart.sh
+
 # 子项目（通过 submodule 管理）
 # ai-cli-session-collector/
 # ai-cli-session-db/

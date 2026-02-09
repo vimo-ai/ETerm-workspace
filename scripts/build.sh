@@ -14,6 +14,7 @@
 #   ./scripts/build.sh sugarloaf # 只编译 sugarloaf-ffi
 #   ./scripts/build.sh mcp-router # 只编译 mcp-router-core
 #   ./scripts/build.sh agent     # 只编译 vimo-agent
+#   ./scripts/build.sh pty-daemon # 只编译 pty-daemon
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
 #   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
@@ -304,6 +305,30 @@ build_agent() {
 }
 
 # ============================================================================
+# 编译 pty-daemon
+# ============================================================================
+build_pty_daemon() {
+    log_info "Building pty-daemon..."
+
+    cd "$ETERM_ROOT"
+    cargo build --release -p pty-daemon
+
+    local BINARY="$ETERM_ROOT/target/release/pty-daemon"
+
+    if [ ! -f "$BINARY" ]; then
+        log_error "pty-daemon binary not found: $BINARY"
+        exit 1
+    fi
+
+    local DEPLOY_DIR="$HOME/.vimo/bin"
+    mkdir -p "$DEPLOY_DIR"
+    cp "$BINARY" "$DEPLOY_DIR/"
+    chmod +x "$DEPLOY_DIR/pty-daemon"
+
+    log_success "pty-daemon built and deployed to $DEPLOY_DIR"
+}
+
+# ============================================================================
 # 编译 mcp-router-core
 # ============================================================================
 build_mcp_router() {
@@ -442,6 +467,9 @@ main() {
         agent)
             build_agent
             ;;
+        pty-daemon)
+            build_pty_daemon
+            ;;
         plugins)
             build_etermkit  # 插件依赖 ETermKit，先确保它已构建
             build_plugins
@@ -461,11 +489,12 @@ main() {
             build_memex
             build_mcp_router
             build_agent
+            build_pty_daemon
             build_plugins
             ;;
         *)
             log_error "Unknown target: $TARGET"
-            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|agent|plugins|lint|check|all]"
+            echo "Usage: $0 [etermkit|ffi|socket|vlaude-ffi|sugarloaf|memex|mcp-router|agent|pty-daemon|plugins|lint|check|all]"
             exit 1
             ;;
     esac
