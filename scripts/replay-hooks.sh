@@ -122,6 +122,23 @@ find_recording() {
     return 1
 }
 
+# 构造 ETerm claude.sock JSON（和 claude_hook.sh 格式一致）
+build_eterm_json() {
+    local raw="$1"
+    echo "$raw" | jq -c '{
+        event_type: (.hook_event_name | ascii_downcase | gsub("(?<a>[A-Z])"; "_" + .a | ascii_downcase) | ltrimstr("_")),
+        session_id: .session_id,
+        terminal_id: 0,
+        transcript_path: .transcript_path,
+        cwd: .cwd
+    }
+    + (if .tool_name then {tool_name: .tool_name} else {} end)
+    + (if .tool_input then {tool_input: .tool_input} else {} end)
+    + (if .tool_use_id then {tool_use_id: .tool_use_id} else {} end)
+    + (if .prompt then {prompt: .prompt} else {} end)
+    + (if .notification_type then {notification_type: .notification_type, message: (.message // "")} else {} end)'
+}
+
 # 回放单条事件
 replay_event() {
     local raw_json="$1"
@@ -136,10 +153,19 @@ replay_event() {
                 return
             fi
             if [ -S "$AGENT_SOCK" ]; then
-                # 构造 agent HookEvent（和 claude_hook.sh 一致）
-                local event_type=$(echo "$raw_json" | jq -r '.hook_event_name // "Unknown"')
-                local session_id=$(echo "$raw_json" | jq -r '.session_id')
-                local agent_json=$(echo "$raw_json" | jq -c '{type:"HookEvent",event_type:.hook_event_name,session_id:.session_id,transcript_path:.transcript_path,cwd:.cwd} + (if .tool_name then {tool_name:.tool_name,tool_input:.tool_input} else {} end)')
+                # 构造 agent HookEvent（和 claude_hook.sh 一致，包含所有可选字段）
+                local agent_json=$(echo "$raw_json" | jq -c '{
+                    type: "HookEvent",
+                    event_type: .hook_event_name,
+                    session_id: .session_id,
+                    transcript_path: (if .transcript_path == "" then null else .transcript_path end),
+                    cwd: (if .cwd == "" then null else .cwd end)
+                }
+                + (if .tool_name then {tool_name: .tool_name} else {} end)
+                + (if .tool_input then {tool_input: .tool_input} else {} end)
+                + (if .tool_use_id then {tool_use_id: .tool_use_id} else {} end)
+                + (if .prompt then {prompt: .prompt} else {} end)
+                + (if .notification_type then {notification_type: .notification_type, message: (.message // "")} else {} end)')
                 (echo "$agent_json" | nc -w 1 -U "$AGENT_SOCK") &
                 echo -e "  ${GREEN}→ agent.sock${NC}"
             else
@@ -148,13 +174,7 @@ replay_event() {
             # 发送到 ETerm
             local eterm_sock=$(find "$ETERM_SOCK_DIR" -name "claude.sock" 2>/dev/null | head -1)
             if [ -n "$eterm_sock" ] && [ -S "$eterm_sock" ]; then
-                local eterm_json=$(echo "$raw_json" | jq -c '{
-                    event_type: (.hook_event_name | ascii_downcase | gsub("(?<a>[A-Z])"; "_" + .a | ascii_downcase) | ltrimstr("_")),
-                    session_id: .session_id,
-                    terminal_id: 0,
-                    transcript_path: .transcript_path,
-                    cwd: .cwd
-                } + (if .tool_name then {tool_name:.tool_name,tool_input:.tool_input} else {} end)')
+                local eterm_json=$(build_eterm_json "$raw_json")
                 (echo "$eterm_json" | nc -w 2 -U "$eterm_sock") &
                 echo -e "  ${GREEN}→ claude.sock${NC}"
             else
@@ -170,13 +190,7 @@ replay_event() {
                 return
             fi
             if [ -n "$eterm_sock" ] && [ -S "$eterm_sock" ]; then
-                local eterm_json=$(echo "$raw_json" | jq -c '{
-                    event_type: (.hook_event_name | ascii_downcase | gsub("(?<a>[A-Z])"; "_" + .a | ascii_downcase) | ltrimstr("_")),
-                    session_id: .session_id,
-                    terminal_id: 0,
-                    transcript_path: .transcript_path,
-                    cwd: .cwd
-                } + (if .tool_name then {tool_name:.tool_name,tool_input:.tool_input} else {} end)')
+                local eterm_json=$(build_eterm_json "$raw_json")
                 (echo "$eterm_json" | nc -w 2 -U "$eterm_sock") &
                 echo -e "  ${GREEN}→ claude.sock${NC}"
             else

@@ -175,7 +175,7 @@ text            → user_question    :    189
 1. **标准流程**: `user → thinking → (tool_use → tool_result → thinking)* → text`
 2. **text 不是 turn 终点**: `text → tool_use` 有 25,591 次（占 text 后续的 57%），Claude 经常先写解释再调工具
 3. **Turn 边界**: `text → user_question`（15,156 次）才是真正的 turn 结束
-4. **~~无 stopReason~~** ⚠️ **stopReason 存在！** 详见 §6.1
+4. **无 stopReason**: JSONL 不写有效 `stopReason`，Turn 边界需从 content 推断（详见 §6.1）
 5. **并行工具模式**: tool_use → tool_use 和 tool_result → tool_result 各约 10K 次，说明并行调用是常态
 6. **跳过 thinking**: tool_result → tool_use（8,993 次）和 user → tool_use（508 次），说明 Claude 有时直接行动不思考
 
@@ -199,21 +199,18 @@ Claude 频繁在工具调用前写解释文字：
 - **最终回复**: 本轮的正式回答（后接 user_question，占 34%）
 - 其他：text → thinking（4%），text → text（3%）
 
-**可通过 stopReason 区分**：最终回复的 assistant 消息携带 `stopReason: "end_turn"`，中间文本携带 `stopReason: "tool_use"` 或无 stopReason。详见 §6.1。
+**通过 content block type 区分**：包含 `tool_use` block → 中间状态（还会继续），纯 `text`/`thinking` → 最终回复。详见 §6.1。
 
 ## 6. 特殊字段
 
-### 6.1 stopReason ⚠️ 关键修正
+### 6.1 Turn 边界判定
 
-**stopReason 存在于 JSONL 中**，是 turn 边界识别的关键字段：
+JSONL 无 `stopReason` 字段。Turn 边界从 assistant 消息的 `message.content` block type 推断：
 
-| stopReason | 全项目次数 | ETerm 项目 | 含义 |
-|---|---|---|---|
-| `tool_use` | 11,535 | 357 | 本条是工具调用，等待 tool_result 后继续 |
-| `end_turn` | 1,411 | 37 | **Turn 结束** — 这是最终回复 |
-| `stop_sequence` | 706 | 3 | 被停止序列中断（subagent 等） |
-
-**stopReason 出现在 summary-like 的 assistant 行上**（携带 hookCount、hasOutput 等字段，共 12,861 次全项目）。不是每条 assistant 行都有，而是 turn 的最后一条汇总行。
+| content 包含 | 含义 |
+|---|---|
+| `tool_use` block | 等待 tool_result 后继续 |
+| 仅 `text`/`thinking` | Turn 结束，最终回复 |
 
 ### 6.2 assistant 行的 top-level 字段
 
@@ -225,7 +222,6 @@ Claude 频繁在工具调用前写解释文字：
 | `requestId` | ~99% | API 请求 ID（同一轮 API 调用相同） |
 | `slug` | ~98% | 模型 slug |
 | `message.content` | 100% | 消息内容（content blocks 数组） |
-| `stopReason` | 部分 | turn 结束标记（见 §6.1） |
 | `toolUseID` | 部分 | 工具调用相关 |
 
 ### 6.3 模型分布
@@ -417,14 +413,13 @@ mcp_failed:        79   MCP 失败
 
 `text` 有"中间解释"（57%，后接 tool_use）和"最终回复"（34%，后接 user）两种语义。
 
-**解决方案**: ~~JSONL 中无法区分~~ → **可通过 stopReason 区分**。`end_turn` = 最终回复，`tool_use` = 还会继续。
+**解决方案**: 从 content block type 推断。包含 `tool_use` = 还会继续，纯 `text`/`thinking` = 最终回复。
 
-### 问题 3: Turn 边界 ✅ 已有方案
+### 问题 3: Turn 边界
 
-~~无 stopReason~~ → **stopReason 存在**（全项目 12,861 条）：
-- `end_turn` (1,411 次) = turn 结束
-- `tool_use` (11,535 次) = 中间状态
-- `stop_sequence` (706 次) = 被中断
+JSONL 无有效 `stopReason` 字段，从 content 推断：
+- 包含 `tool_use` block → 中间状态
+- 仅 `text`/`thinking` block → turn 结束
 
 ### 问题 4: 工具执行上下文
 
