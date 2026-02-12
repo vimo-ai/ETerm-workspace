@@ -212,6 +212,8 @@ class TerminalTabManager: ObservableObject {
     /// 标记任务为"已发送命令"
     func markTaskSent(_ tabId: UUID, command: String) {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        // 标记运行边界，用于 current_run 日志查询
+        pool?.markLogBoundary(tabs[index].terminalId)
         tabs[index].taskState = .sent
         tabs[index].commandString = command
         tabs[index].startedAt = Date()

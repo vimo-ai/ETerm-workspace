@@ -303,30 +303,42 @@ class SimpleTerminalPoolWrapper {
 
     // MARK: - LogBuffer API (Rust 层日志捕获)
 
-    /// 查询终端日志（分页 + 搜索）
+    /// 查询终端日志（分页 + 搜索 + 方向 + 运行边界）
     ///
     /// - Parameters:
     ///   - terminalId: 终端 ID
     ///   - since: 返回 seq > since 的日志（0 = 全部）
+    ///   - before: 返回 seq < before 的日志（0 = 无上界）
     ///   - limit: 最多返回行数
     ///   - search: 可选的搜索过滤
     ///   - isRegex: 是否将 search 作为正则表达式
     ///   - caseInsensitive: 是否大小写不敏感
+    ///   - backward: 是否从尾部反向扫描
+    ///   - currentRun: 是否只查当前运行
     /// - Returns: JSON 字符串，nil 表示 LogBuffer 未启用
-    func queryLog(_ terminalId: Int, since: UInt64 = 0, limit: Int = 200, search: String? = nil, isRegex: Bool = false, caseInsensitive: Bool = true) -> String? {
+    func queryLog(_ terminalId: Int, since: UInt64 = 0, before: UInt64 = 0, limit: Int = 200, search: String? = nil, isRegex: Bool = false, caseInsensitive: Bool = true, backward: Bool = false, currentRun: Bool = false) -> String? {
         guard let handle = handle, terminalId >= 0 else { return nil }
 
         let result: UnsafeMutablePointer<CChar>?
         if let search = search {
-            result = terminal_pool_query_log(handle, terminalId, since, limit, search, isRegex, caseInsensitive)
+            result = terminal_pool_query_log(handle, terminalId, since, before, limit, search, isRegex, caseInsensitive, backward, currentRun)
         } else {
-            result = terminal_pool_query_log(handle, terminalId, since, limit, nil, isRegex, caseInsensitive)
+            result = terminal_pool_query_log(handle, terminalId, since, before, limit, nil, isRegex, caseInsensitive, backward, currentRun)
         }
 
         guard let cStr = result else { return nil }
         let json = String(cString: cStr)
         rio_free_string(cStr)
         return json
+    }
+
+    /// 标记终端日志的运行边界
+    ///
+    /// - Parameter terminalId: 终端 ID
+    /// - Returns: boundary seq 值，0 表示失败
+    func markLogBoundary(_ terminalId: Int) -> UInt64 {
+        guard let handle = handle, terminalId >= 0 else { return 0 }
+        return terminal_pool_mark_log_boundary(handle, terminalId)
     }
 
     /// 获取终端最后 N 行日志

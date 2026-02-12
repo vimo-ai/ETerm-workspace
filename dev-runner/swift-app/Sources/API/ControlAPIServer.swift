@@ -753,14 +753,17 @@ final class ControlAPIServer {
         }
 
         // 解析查询参数
-        let since = UInt64(req.queryParam("since") ?? "0") ?? 0
+        let since = UInt64(req.queryParam("since") ?? req.queryParam("after") ?? "0") ?? 0
+        let before = UInt64(req.queryParam("before") ?? "0") ?? 0
         let limit = Int(req.queryParam("limit") ?? "200") ?? 200
         let search = req.queryParam("search")
         let isRegex = req.queryParam("regex") == "true"
         let caseInsensitive = req.queryParam("case_insensitive") != "false" // 默认 true，向后兼容
+        let backward = req.queryParam("direction") == "backward"
+        let currentRun = req.queryParam("current_run") == "true"
 
         // 使用 LogBuffer 查询（Rust 层，已剥离 ANSI、处理 \r）
-        if let json = pool.queryLog(tab.terminalId, since: since, limit: limit, search: search, isRegex: isRegex, caseInsensitive: caseInsensitive) {
+        if let json = pool.queryLog(tab.terminalId, since: since, before: before, limit: limit, search: search, isRegex: isRegex, caseInsensitive: caseInsensitive, backward: backward, currentRun: currentRun) {
             // Rust 返回的 JSON 已是完整格式，直接透传
             return .rawJSON(json)
         }

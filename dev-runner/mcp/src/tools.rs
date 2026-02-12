@@ -185,7 +185,7 @@ pub fn get_tools() -> Vec<Value> {
         }),
         json!({
             "name": "logs",
-            "description": "Get terminal output logs from a running project. Supports incremental polling via 'since' parameter: pass the 'next_seq' value from the previous response as 'since' to get only new lines. Supports text search and regex filtering.",
+            "description": "Get terminal output logs from a project. By default returns the last 50 lines of the **current run** (most recent execution), scanning backward from the end. Use 'since' with 'direction: forward' for incremental polling. Supports text search and regex filtering.\n\nKey fields in response: 'lines' (array of {seq, text}), 'next_seq' (for forward polling), 'has_more', 'boundary_seq' (current run start), 'boundary_valid'.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -203,9 +203,24 @@ pub fn get_tools() -> Vec<Value> {
                         "description": "Maximum number of log lines to return. Defaults to 50.",
                         "default": 50
                     },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["backward", "forward"],
+                        "description": "Query direction: 'backward' scans from the end (most recent lines first, default), 'forward' scans from 'since' toward the end (for incremental polling).",
+                        "default": "backward"
+                    },
                     "since": {
                         "type": "integer",
-                        "description": "Sequence number to start from (exclusive). Use 'next_seq' from a previous response for incremental polling. Defaults to 0 (all available logs)."
+                        "description": "Return lines with seq > since (exclusive). For forward polling, pass 'next_seq' from the previous response. For backward queries, acts as a lower bound."
+                    },
+                    "before": {
+                        "type": "integer",
+                        "description": "Return lines with seq < before (exclusive). For backward pagination, pass the smallest seq from the previous response."
+                    },
+                    "current_run": {
+                        "type": "boolean",
+                        "description": "Only show logs from the current run (since last task start). Defaults to true. Set to false to see historical logs across runs.",
+                        "default": true
                     },
                     "search": {
                         "type": "string",
@@ -218,24 +233,18 @@ pub fn get_tools() -> Vec<Value> {
                     },
                     "case_insensitive": {
                         "type": "boolean",
-                        "description": "If true, search is case-insensitive. Defaults to true for backward compatibility.",
+                        "description": "If true, search is case-insensitive. Defaults to true.",
                         "default": true
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Maximum characters in the response. Lines are trimmed from the beginning to fit. Set to 0 for unlimited. Defaults to 4000.",
+                        "description": "Maximum characters in the response. Lines are trimmed to fit. Set to 0 for unlimited. Defaults to 4000.",
                         "default": 4000
                     },
                     "verbose": {
                         "type": "boolean",
                         "description": "If true, return full output without character limit. Overrides max_chars. Defaults to false.",
                         "default": false
-                    },
-                    "anchor": {
-                        "type": "string",
-                        "enum": ["tail", "head"],
-                        "description": "Which end to keep when truncating: 'tail' keeps most recent lines (default), 'head' keeps earliest lines (useful for build start or initial errors).",
-                        "default": "tail"
                     }
                 },
                 "required": ["path"]
@@ -424,9 +433,27 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
             query.push(("limit", limit.to_string()));
 
+            // Direction: backward (default) or forward
+            // Also accept legacy "anchor" as alias: tail→backward, head→forward
+            let direction = args.get("direction").and_then(|v| v.as_str())
+                .or_else(|| args.get("anchor").and_then(|v| v.as_str()).map(|a| match a {
+                    "head" => "forward",
+                    _ => "backward",
+                }))
+                .unwrap_or("backward");
+            query.push(("direction", direction.to_string()));
+
             if let Some(since) = args.get("since").and_then(|v| v.as_u64()) {
                 query.push(("since", since.to_string()));
             }
+            if let Some(before) = args.get("before").and_then(|v| v.as_u64()) {
+                query.push(("before", before.to_string()));
+            }
+
+            // current_run defaults to true
+            let current_run = args.get("current_run").and_then(|v| v.as_bool()).unwrap_or(true);
+            query.push(("current_run", current_run.to_string()));
+
             if let Some(search) = args.get("search").and_then(|v| v.as_str()) {
                 query.push(("search", search.to_string()));
             }
@@ -452,7 +479,8 @@ pub fn call_tool(client: &DevRunnerClient, name: &str, args: Value) -> Result<Va
                 args.get("max_chars").and_then(|v| v.as_u64()).unwrap_or(4000) as usize
             };
 
-            let anchor = args.get("anchor").and_then(|v| v.as_str()).unwrap_or("tail");
+            // Truncation anchor follows direction: backward keeps tail, forward keeps head
+            let anchor = if direction == "forward" { "head" } else { "tail" };
 
             Ok(truncate_log_response(result, max_chars, anchor))
         }
@@ -573,9 +601,9 @@ fn truncate_log_response(mut result: Value, max_chars: usize, anchor: &str) -> V
 
     let total_lines = lines.len();
 
-    // Calculate total character count
+    // Calculate total character count (lines are {seq, text} objects)
     let total_chars: usize = lines.iter()
-        .filter_map(|v| v.as_str())
+        .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
         .map(|s| s.len() + 1) // +1 for newline equivalent
         .sum();
 
@@ -588,7 +616,7 @@ fn truncate_log_response(mut result: Value, max_chars: usize, anchor: &str) -> V
         let mut budget = max_chars;
         let mut keep_until = 0;
         for line in lines.iter() {
-            let line_cost = line.as_str().map(|s| s.len() + 1).unwrap_or(1);
+            let line_cost = line.get("text").and_then(|t| t.as_str()).map(|s| s.len() + 1).unwrap_or(1);
             if line_cost > budget {
                 break;
             }
@@ -603,7 +631,7 @@ fn truncate_log_response(mut result: Value, max_chars: usize, anchor: &str) -> V
         let mut budget = max_chars;
         let mut keep_from = lines.len();
         for (i, line) in lines.iter().enumerate().rev() {
-            let line_cost = line.as_str().map(|s| s.len() + 1).unwrap_or(1);
+            let line_cost = line.get("text").and_then(|t| t.as_str()).map(|s| s.len() + 1).unwrap_or(1);
             if line_cost > budget {
                 break;
             }
@@ -621,12 +649,11 @@ fn truncate_log_response(mut result: Value, max_chars: usize, anchor: &str) -> V
     result["truncated"] = json!(true);
     result["truncated_lines"] = json!(truncated_count);
     result["total_lines"] = json!(total_lines);
-    result["anchor"] = json!(anchor);
     result["hint"] = json!(format!(
-        "Output truncated (showing {} from {}). Use 'verbose: true' for full output, 'anchor: \"{}\"' to see the other end, or 'search' to filter.",
-        anchor,
-        if anchor == "tail" { "head" } else { "tail" },
-        if anchor == "tail" { "head" } else { "tail" }
+        "Output truncated (showing {} of {} lines). Use 'verbose: true' for full output, 'direction: \"{}\"' to scan the other end, or 'search' to filter.",
+        total_lines - truncated_count,
+        total_lines,
+        if anchor == "tail" { "forward" } else { "backward" }
     ));
 
     result
@@ -741,6 +768,8 @@ fn fetch_error_logs(
     let mut query: Vec<(&str, String)> = vec![
         ("path", path.to_string()),
         ("limit", "50".to_string()),
+        ("direction", "backward".to_string()),
+        ("current_run", "true".to_string()),
     ];
     if let Some(action_str) = action {
         query.push(("action", action_str.to_string()));

@@ -1096,15 +1096,33 @@ void terminal_pool_free_string_array(
 /// @param search Optional search filter (NULL for no filter)
 /// @param is_regex If true, treat search as a regex pattern
 /// @param case_insensitive If true, search is case-insensitive
+/// @param backward If true, scan from tail and return most recent matches
+/// @param current_run If true, only return logs from the current run (after boundary)
 /// @return JSON string on success (must be freed with rio_free_string), NULL if disabled or error
 char* terminal_pool_query_log(
     TerminalPoolHandle handle,
     size_t terminal_id,
     uint64_t since,
+    uint64_t before,
     size_t limit,
     const char* search,
     bool is_regex,
-    bool case_insensitive
+    bool case_insensitive,
+    bool backward,
+    bool current_run
+);
+
+/// Mark a run boundary on the terminal's log buffer
+///
+/// Records the current position as the start of a new run.
+/// Subsequent queries with current_run=true will only return logs after this boundary.
+///
+/// @param handle TerminalPool handle
+/// @param terminal_id Terminal ID
+/// @return Boundary seq value, 0 on failure (LogBuffer not enabled or terminal not found)
+uint64_t terminal_pool_mark_log_boundary(
+    TerminalPoolHandle handle,
+    size_t terminal_id
 );
 
 /// Get last N lines from terminal log buffer
