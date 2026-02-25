@@ -16,6 +16,7 @@
 #   ./scripts/build.sh agent     # 只编译 vimo-agent
 #   ./scripts/build.sh pty-daemon # 只编译 pty-daemon
 #   ./scripts/build.sh dev-runner # 只编译 dev-runner FFI
+#   ./scripts/build.sh dev-runner-kit # 只构建 DevRunnerKit 插件
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
 #   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
@@ -351,6 +352,13 @@ build_dev_runner() {
     mkdir -p "$DEV_RUNNER/swift-app/Libs"
     cp "$DYLIB" "$DEV_RUNNER/swift-app/Libs/"
 
+    # 复制到 DevRunnerKit/Libs/（Kit 插件也需要同一份 dylib）
+    local KIT_LIBS="$ETERM_DIR/Plugins/DevRunnerKit/Libs/DevRunnerFFI"
+    if [ -d "$KIT_LIBS" ]; then
+        log_info "Copying to DevRunnerKit/Libs/..."
+        cp "$DYLIB" "$KIT_LIBS/"
+    fi
+
     log_success "dev-runner FFI built and deployed"
 }
 
@@ -378,6 +386,29 @@ build_mcp_router() {
     [ -f "$HEADER" ] && cp "$HEADER" "$MCP_ROUTER_KIT/Lib/"
 
     log_success "mcp-router-core built and deployed"
+}
+
+# ============================================================================
+# 构建 DevRunnerKit 插件
+# ============================================================================
+build_dev_runner_kit() {
+    log_info "Building DevRunnerKit..."
+
+    local DEV_RUNNER_KIT="$ETERM_DIR/Plugins/DevRunnerKit"
+    local PLUGINS_OUTPUT="$ETERM_ROOT/build/plugins"
+
+    if [ ! -f "$DEV_RUNNER_KIT/build.sh" ]; then
+        log_warn "DevRunnerKit/build.sh not found, skipping"
+        return
+    fi
+
+    mkdir -p "$PLUGINS_OUTPUT"
+    cd "$DEV_RUNNER_KIT"
+    # 清除 SPM 缓存，确保使用最新的 ETermKit framework
+    rm -rf .build
+    BUNDLE_OUTPUT_DIR="$PLUGINS_OUTPUT" bash build.sh
+
+    log_success "DevRunnerKit built to $PLUGINS_OUTPUT"
 }
 
 # ============================================================================
@@ -499,6 +530,10 @@ main() {
         dev-runner)
             build_dev_runner
             ;;
+        dev-runner-kit)
+            build_etermkit  # 插件依赖 ETermKit
+            build_dev_runner_kit
+            ;;
         plugins)
             build_etermkit  # 插件依赖 ETermKit，先确保它已构建
             build_plugins
@@ -520,6 +555,7 @@ main() {
             build_agent
             build_pty_daemon
             build_dev_runner
+            build_dev_runner_kit
             build_plugins
             ;;
         *)
