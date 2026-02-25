@@ -22,3 +22,6 @@
 [submodule "vimo-rust"]
 	path = vimo-rust
 	url = git@github.com:vimo-ai/vimo-rust.git
+[submodule "dev-runner"]
+	path = dev-runner
+	url = git@github.com:vimo-ai/dev-runner.git
