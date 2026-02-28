@@ -8,7 +8,7 @@ ETerm 插件分为两类，**构建方式完全不同**：
 
 | 类型 | 插件 | 构建方式 | ETermKit 依赖 |
 |------|------|---------|--------------|
-| **内置插件** | AICliKit, ClaudeKit, ClaudeMonitorKit, DevHelperKit, HistoryKit, OneLineCommandKit, TranslationKit, WorkspaceKit, WritingKit | Xcode + `build_all_plugins.sh` | 预编译 framework |
+| **内置插件** | AICliKit, ClaudeKit, ClaudeMonitorKit, HistoryKit, OneLineCommandKit, TranslationKit, WorkspaceKit, WritingKit | Xcode + `build_all_plugins.sh` | 预编译 framework |
 | **外部插件** | VlaudeKit, MemexKit, MCPRouterKit | 独立 `swift build` | 预编译 framework |
 
 ### 为什么分开？
