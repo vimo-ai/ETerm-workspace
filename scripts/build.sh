@@ -334,6 +334,12 @@ build_pty_daemon() {
 # 编译 dev-runner FFI
 # ============================================================================
 build_dev_runner() {
+    # NOTE(main): DevRunner is intentionally disabled on main while we
+    # stabilize the core terminal path. Keep the build logic in history and
+    # on preservation branches, but no-op here instead of deleting it.
+    log_warn "DevRunner FFI build is temporarily disabled on main"
+    return
+
     log_info "Building dev-runner FFI..."
 
     # dev-runner/app 是独立 workspace，需要单独编译
@@ -392,6 +398,12 @@ build_mcp_router() {
 # 构建 DevRunnerKit 插件
 # ============================================================================
 build_dev_runner_kit() {
+    # NOTE(main): DevRunnerKit is intentionally disabled on main while we
+    # unwind the daemon-backed terminal flow. Keep the plugin code on disk and
+    # skip packaging from the default build path for now.
+    log_warn "DevRunnerKit build is temporarily disabled on main"
+    return
+
     log_info "Building DevRunnerKit..."
 
     local DEV_RUNNER_KIT="$ETERM_DIR/Plugins/DevRunnerKit"
@@ -528,10 +540,13 @@ main() {
             build_pty_daemon
             ;;
         dev-runner)
+            # NOTE(main): keep target name for compatibility, but short-circuit
+            # to a documented no-op while DevRunner stays off the main branch.
             build_dev_runner
             ;;
         dev-runner-kit)
-            build_etermkit  # 插件依赖 ETermKit
+            # NOTE(main): keep target name for compatibility, but do not build
+            # the plugin on main until the daemon-backed flow is re-enabled.
             build_dev_runner_kit
             ;;
         plugins)
@@ -554,6 +569,8 @@ main() {
             build_mcp_router
             build_agent
             build_pty_daemon
+            # NOTE(main): DevRunner / DevRunnerKit intentionally excluded from
+            # the default all target to keep main on the stable terminal path.
             build_dev_runner
             build_dev_runner_kit
             build_plugins
