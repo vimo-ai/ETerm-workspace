@@ -187,6 +187,11 @@ build_socket_ffi() {
     cp "$DYLIB" "$VLAUDE_KIT/Libs/SocketClient/"
     [ -f "$HEADER" ] && cp "$HEADER" "$VLAUDE_KIT/Libs/SocketClient/"
 
+    # 修正 install name（cargo 产出的是绝对路径）
+    install_name_tool -id \
+        "@loader_path/../Libs/libsocket_client_ffi.dylib" \
+        "$VLAUDE_KIT/Libs/SocketClient/libsocket_client_ffi.dylib"
+
     # 创建 module.modulemap
     cat > "$VLAUDE_KIT/Libs/SocketClient/module.modulemap" << 'EOF'
 module SocketClientFFI {
@@ -221,6 +226,11 @@ build_vlaude_ffi() {
     mkdir -p "$VLAUDE_KIT/Libs/VlaudeFfi"
     cp "$DYLIB" "$VLAUDE_KIT/Libs/VlaudeFfi/"
     [ -f "$HEADER" ] && cp "$HEADER" "$VLAUDE_KIT/Libs/VlaudeFfi/"
+
+    # 修正 install name（cargo 产出的是绝对路径）
+    install_name_tool -id \
+        "@loader_path/../Libs/libvlaude_ffi.dylib" \
+        "$VLAUDE_KIT/Libs/VlaudeFfi/libvlaude_ffi.dylib"
 
     # 创建 module.modulemap
     cat > "$VLAUDE_KIT/Libs/VlaudeFfi/module.modulemap" << 'EOF'
@@ -390,6 +400,11 @@ build_mcp_router() {
     mkdir -p "$MCP_ROUTER_KIT/Lib"
     cp "$DYLIB" "$MCP_ROUTER_KIT/Lib/"
     [ -f "$HEADER" ] && cp "$HEADER" "$MCP_ROUTER_KIT/Lib/"
+
+    # 修正 install name（cargo 产出的是绝对路径，换机器/目录就会挂）
+    install_name_tool -id \
+        "@loader_path/../Frameworks/libmcp_router_core.dylib" \
+        "$MCP_ROUTER_KIT/Lib/libmcp_router_core.dylib"
 
     log_success "mcp-router-core built and deployed"
 }
