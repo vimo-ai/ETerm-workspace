@@ -260,6 +260,18 @@ build_sugarloaf() {
         exit 1
     fi
 
+    # skia-safe 0.93.1 (Skia m145) 的 libskia.a 与 libskshaper.a 各自内嵌一份 harfbuzz；
+    # cargo 把两者都打进 sugarloaf-ffi 的 staticlib 时会产生 70 个重复 .o，导致 ld 报
+    # "duplicate symbol" 链接失败。两份 .o 字节一致（同 sha），按 member 名去重即可。
+    local DUP_COUNT=$(ar -t "$STATIC_LIB" 2>/dev/null | sort | uniq -d | wc -l | tr -d ' ')
+    if [ "$DUP_COUNT" -gt 0 ]; then
+        log_info "Deduplicating $DUP_COUNT redundant members in libsugarloaf_ffi.a..."
+        local TMP_DIR=$(mktemp -d)
+        ( cd "$TMP_DIR" && ar -x "$STATIC_LIB" && ar -rcs "$TMP_DIR/libsugarloaf_ffi.dedup.a" *.o ) >/dev/null 2>&1
+        mv "$TMP_DIR/libsugarloaf_ffi.dedup.a" "$STATIC_LIB"
+        rm -rf "$TMP_DIR"
+    fi
+
     # 复制到 ETerm/ETerm/Libs/Sugarloaf（Xcode PROJECT_DIR 引用路径）
     log_info "Copying to ETerm/ETerm/Libs/Sugarloaf..."
     mkdir -p "$ETERM_DIR/ETerm/ETerm/Libs/Sugarloaf"
