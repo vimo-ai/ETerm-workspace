@@ -579,7 +579,7 @@ impl Server {
             .map(|s| SessionInfo {
                 id: s.id,
                 state: format!("{:?}", s.state),
-                child_pid: s.child_pid as i32,
+                child_pid: s.child_pid,
                 cols: s.winsize.cols,
                 rows: s.winsize.rows,
                 ptsname: s.ptsname.clone(),

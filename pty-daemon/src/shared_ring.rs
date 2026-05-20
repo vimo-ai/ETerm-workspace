@@ -79,7 +79,7 @@ impl SharedRingBuffer {
         // 3. 计算 mmap 大小（页对齐）
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
         let required_size = HEADER_SIZE + capacity;
-        let mmap_size = ((required_size + page_size - 1) / page_size) * page_size;
+        let mmap_size = required_size.div_ceil(page_size) * page_size;
 
         // 4. ftruncate 设置大小
         let truncate_result = unsafe { libc::ftruncate(shm_fd, mmap_size as i64) };

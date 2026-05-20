@@ -127,12 +127,9 @@ fn cmd_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut shell = None;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "--shell" => {
-                i += 1;
-                shell = args.get(i).cloned();
-            }
-            _ => {}
+        if args[i].as_str() == "--shell" {
+            i += 1;
+            shell = args.get(i).cloned();
         }
         i += 1;
     }
@@ -357,8 +354,8 @@ fn cmd_list() -> Result<(), Box<dyn std::error::Error>> {
                 println!("no sessions");
             } else {
                 println!(
-                    "{:<36}  {:<10}  {:<8}  {:<10}  {:<6}  {}",
-                    "ID", "STATE", "PID", "SIZE", "ALIVE", "AGE"
+                    "{:<36}  {:<10}  {:<8}  {:<10}  {:<6}  AGE",
+                    "ID", "STATE", "PID", "SIZE", "ALIVE"
                 );
                 for s in sessions {
                     println!(

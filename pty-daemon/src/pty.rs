@@ -219,12 +219,11 @@ pub fn create_pty(
         });
     }
 
-    let child_process = builder.spawn().map_err(|e| {
+    let child_process = builder.spawn().inspect_err(|e| {
         // spawn 失败要关 master fd
         unsafe {
             libc::close(master);
         }
-        e
     })?;
 
     let pid = child_process.id() as libc::pid_t;
