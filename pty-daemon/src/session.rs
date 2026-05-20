@@ -113,9 +113,13 @@ impl Session {
     /// 清理：关 fd，杀进程，删除共享内存
     pub fn cleanup(&mut self) {
         if self.is_child_alive() {
-            unsafe { libc::kill(self.child_pid, libc::SIGHUP); }
+            unsafe {
+                libc::kill(self.child_pid, libc::SIGHUP);
+            }
         }
-        unsafe { libc::close(self.master_fd); }
+        unsafe {
+            libc::close(self.master_fd);
+        }
         self.master_fd = -1;
         // 删除共享内存对象
         if let Err(e) = self.shared_ring.unlink() {

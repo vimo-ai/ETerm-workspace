@@ -92,12 +92,18 @@ fn cmd_daemon() -> Result<(), Box<dyn std::error::Error>> {
 fn connect() -> Result<UnixStream, Box<dyn std::error::Error>> {
     let path = socket_path();
     let stream = UnixStream::connect(&path).map_err(|e| {
-        format!("cannot connect to daemon at {}: {e}\nIs the daemon running?", path.display())
+        format!(
+            "cannot connect to daemon at {}: {e}\nIs the daemon running?",
+            path.display()
+        )
     })?;
     Ok(stream)
 }
 
-fn send_request(stream: &mut UnixStream, req: &Request) -> Result<Response, Box<dyn std::error::Error>> {
+fn send_request(
+    stream: &mut UnixStream,
+    req: &Request,
+) -> Result<Response, Box<dyn std::error::Error>> {
     let encoded = protocol::encode_message(req);
     stream.write_all(&encoded)?;
 
@@ -182,16 +188,17 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let master_fd = fd_passing::recv_fd(stream.as_raw_fd())?;
 
             // 打开共享内存 ring buffer，直接从 shm 读取历史数据并 replay
-            let shared_ring = SharedRingBuffer::open(&shm_name).map_err(|e| {
-                format!("failed to open shared ring {shm_name}: {e}")
-            })?;
+            let shared_ring = SharedRingBuffer::open(&shm_name)
+                .map_err(|e| format!("failed to open shared ring {shm_name}: {e}"))?;
             let ring_data = shared_ring.dump();
             if !ring_data.is_empty() {
                 std::io::stdout().write_all(&ring_data)?;
             }
 
             println!("attached to {session_id}");
-            println!("  master_fd={master_fd} child_pid={child_pid} size={cols}x{rows} shm={shm_name}");
+            println!(
+                "  master_fd={master_fd} child_pid={child_pid} size={cols}x{rows} shm={shm_name}"
+            );
 
             // 简易交互：stdin → PTY，PTY → stdout + 共享内存
             run_interactive(master_fd, id, &mut stream, &shared_ring)?;
@@ -356,7 +363,13 @@ fn cmd_list() -> Result<(), Box<dyn std::error::Error>> {
                 for s in sessions {
                     println!(
                         "{:<36}  {:<10}  {:<8}  {}x{:<6}  {:<6}  {}s",
-                        s.id, s.state, s.child_pid, s.cols, s.rows, s.child_alive, s.created_secs_ago
+                        s.id,
+                        s.state,
+                        s.child_pid,
+                        s.cols,
+                        s.rows,
+                        s.child_alive,
+                        s.created_secs_ago
                     );
                 }
             }

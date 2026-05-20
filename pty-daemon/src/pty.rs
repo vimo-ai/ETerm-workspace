@@ -221,7 +221,9 @@ pub fn create_pty(
 
     let child_process = builder.spawn().map_err(|e| {
         // spawn 失败要关 master fd
-        unsafe { libc::close(master); }
+        unsafe {
+            libc::close(master);
+        }
         e
     })?;
 

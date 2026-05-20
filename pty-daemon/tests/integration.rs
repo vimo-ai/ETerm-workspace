@@ -190,7 +190,11 @@ impl AttachedSession {
     /// 向 PTY 写入
     fn write(&self, data: &[u8]) {
         let ret = unsafe { libc::write(self.pty_fd, data.as_ptr() as *const _, data.len()) };
-        assert!(ret > 0, "pty write failed: {}", std::io::Error::last_os_error());
+        assert!(
+            ret > 0,
+            "pty write failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     /// 从 PTY 读取直到找到 marker 或超时
@@ -205,10 +209,7 @@ impl AttachedSession {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            let remaining_ms = timeout
-                .saturating_sub(start.elapsed())
-                .as_millis()
-                .min(100) as i32;
+            let remaining_ms = timeout.saturating_sub(start.elapsed()).as_millis().min(100) as i32;
             if remaining_ms <= 0 {
                 break;
             }
@@ -253,7 +254,9 @@ impl AttachedSession {
 impl Drop for AttachedSession {
     fn drop(&mut self) {
         if self.pty_fd >= 0 {
-            unsafe { libc::close(self.pty_fd); }
+            unsafe {
+                libc::close(self.pty_fd);
+            }
             self.pty_fd = -1;
         }
     }
@@ -276,7 +279,10 @@ fn test_create_session() {
     let daemon = TestDaemon::start("create");
     let id = Client::create(daemon.sock());
     assert_eq!(Client::session_count(daemon.sock()), 1);
-    assert_eq!(Client::session_state(daemon.sock(), id), Some("Active".into()));
+    assert_eq!(
+        Client::session_state(daemon.sock(), id),
+        Some("Active".into())
+    );
 }
 
 #[test]
@@ -285,7 +291,10 @@ fn test_attach_execute_output() {
     let id = Client::create(daemon.sock());
     let session = AttachedSession::attach(daemon.sock(), id);
 
-    assert_eq!(Client::session_state(daemon.sock(), id), Some("Attached".into()));
+    assert_eq!(
+        Client::session_state(daemon.sock(), id),
+        Some("Attached".into())
+    );
 
     session.write(b"echo MARKER_TEST_12345\n");
     let output = session.read_until("MARKER_TEST_12345", Duration::from_secs(3));
@@ -301,7 +310,10 @@ fn test_detach_session_survives() {
 
     thread::sleep(Duration::from_millis(500));
     assert_eq!(Client::session_count(daemon.sock()), 1);
-    assert_eq!(Client::session_state(daemon.sock(), id), Some("Active".into()));
+    assert_eq!(
+        Client::session_state(daemon.sock(), id),
+        Some("Active".into())
+    );
 }
 
 #[test]
@@ -347,14 +359,20 @@ fn test_crash_detach_daemon_takeover() {
     let daemon = TestDaemon::start("crash");
     let id = Client::create(daemon.sock());
     let session = AttachedSession::attach(daemon.sock(), id);
-    assert_eq!(Client::session_state(daemon.sock(), id), Some("Attached".into()));
+    assert_eq!(
+        Client::session_state(daemon.sock(), id),
+        Some("Attached".into())
+    );
 
     // 模拟崩溃：直接丢弃，不发 Detach
     session.simulate_crash();
 
     // daemon 检测到 EV_EOF，自动回滚到 Active
     thread::sleep(Duration::from_secs(1));
-    assert_eq!(Client::session_state(daemon.sock(), id), Some("Active".into()));
+    assert_eq!(
+        Client::session_state(daemon.sock(), id),
+        Some("Active".into())
+    );
 
     // 崩溃后 reattach 正常工作
     let session2 = AttachedSession::attach(daemon.sock(), id);
@@ -411,7 +429,10 @@ fn test_multiple_sessions() {
     // Kill 一个，另一个不受影响
     Client::oneshot(daemon.sock(), &Request::Kill { session_id: id1 });
     assert_eq!(Client::session_count(daemon.sock()), 1);
-    assert_eq!(Client::session_state(daemon.sock(), id2), Some("Active".into()));
+    assert_eq!(
+        Client::session_state(daemon.sock(), id2),
+        Some("Active".into())
+    );
     assert_eq!(Client::session_state(daemon.sock(), id1), None);
 }
 

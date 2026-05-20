@@ -102,7 +102,12 @@ impl Server {
         }
 
         // 注册 listener fd
-        kq_register(kq, self.listener.as_raw_fd(), libc::EVFILT_READ, libc::EV_ADD)?;
+        kq_register(
+            kq,
+            self.listener.as_raw_fd(),
+            libc::EVFILT_READ,
+            libc::EV_ADD,
+        )?;
 
         // 注册 SIGTERM/SIGINT — 用 kqueue EVFILT_SIGNAL 代替 signal handler
         unsafe {
@@ -215,7 +220,9 @@ impl Server {
             }
         }
 
-        unsafe { libc::close(kq); }
+        unsafe {
+            libc::close(kq);
+        }
         self.cleanup();
         Ok(())
     }
@@ -318,7 +325,9 @@ impl Server {
             // 清理可能残留的 pending dup_fd（Attach 和 send_fd 之间断开）
             if let Some(dup_fd) = self.pending_dup_fds.remove(&id) {
                 eprintln!("[daemon] closing leaked pending dup_fd={dup_fd} for session {id}");
-                unsafe { libc::close(dup_fd); }
+                unsafe {
+                    libc::close(dup_fd);
+                }
             }
             if let Some(s) = self.sessions.get_mut(&id) {
                 s.detach();
@@ -337,7 +346,15 @@ impl Server {
                 working_dir,
                 terminal_id,
                 envs,
-            } => self.handle_create(kq, shell, cols, rows, working_dir, terminal_id, envs.as_ref()),
+            } => self.handle_create(
+                kq,
+                shell,
+                cols,
+                rows,
+                working_dir,
+                terminal_id,
+                envs.as_ref(),
+            ),
 
             Request::Attach { session_id } => self.handle_attach(kq, client_fd, session_id),
 
@@ -381,7 +398,14 @@ impl Server {
         envs: Option<&HashMap<String, String>>,
     ) -> Response {
         let shell_str = shell.as_deref().unwrap_or("");
-        match pty::create_pty(shell_str, cols, rows, working_dir.as_deref(), terminal_id, envs) {
+        match pty::create_pty(
+            shell_str,
+            cols,
+            rows,
+            working_dir.as_deref(),
+            terminal_id,
+            envs,
+        ) {
             Ok(pty_pair) => {
                 let master_fd = pty_pair.master_fd;
                 let child_pid = pty_pair.child_pid;
@@ -424,12 +448,7 @@ impl Server {
         }
     }
 
-    fn handle_attach(
-        &mut self,
-        kq: RawFd,
-        client_fd: RawFd,
-        session_id: Uuid,
-    ) -> Response {
+    fn handle_attach(&mut self, kq: RawFd, client_fd: RawFd, session_id: Uuid) -> Response {
         let session = match self.sessions.get_mut(&session_id) {
             Some(s) => s,
             None => {
@@ -464,7 +483,10 @@ impl Server {
         let rows = session.winsize.rows;
         let child_pid = session.child_pid;
         let shm_name = session.shm_name.clone();
-        eprintln!("[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes", session.shared_ring.len());
+        eprintln!(
+            "[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes",
+            session.shared_ring.len()
+        );
 
         // Unregister master_fd from kqueue — daemon sleeps while ETerm is attached
         let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_DELETE);
@@ -487,19 +509,25 @@ impl Server {
 
     /// AttachReady 后发送 dup(master_fd)，ring data 由客户端直接从 shm 读取
     fn send_attach_data(&mut self, client_fd: RawFd, session_id: Uuid) -> io::Result<()> {
-        let dup_fd = self.pending_dup_fds.remove(&session_id)
+        let dup_fd = self
+            .pending_dup_fds
+            .remove(&session_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "dup_fd not found"))?;
 
         let raw_client_fd = match self.clients.get(&client_fd) {
             Some(c) => c.stream.as_raw_fd(),
             None => {
-                unsafe { libc::close(dup_fd); }
+                unsafe {
+                    libc::close(dup_fd);
+                }
                 return Err(io::Error::new(io::ErrorKind::NotFound, "client gone"));
             }
         };
 
         let send_result = fd_passing::send_fd(raw_client_fd, dup_fd);
-        unsafe { libc::close(dup_fd); }
+        unsafe {
+            libc::close(dup_fd);
+        }
         send_result
     }
 
@@ -507,7 +535,9 @@ impl Server {
     fn revert_attach(&mut self, kq: RawFd, session_id: Uuid) {
         // 清理 pending dup_fd
         if let Some(dup_fd) = self.pending_dup_fds.remove(&session_id) {
-            unsafe { libc::close(dup_fd); }
+            unsafe {
+                libc::close(dup_fd);
+            }
         }
         if let Some(session) = self.sessions.get_mut(&session_id) {
             session.detach();
@@ -516,13 +546,7 @@ impl Server {
         }
     }
 
-    fn handle_detach(
-        &mut self,
-        kq: RawFd,
-        session_id: Uuid,
-        cols: u16,
-        rows: u16,
-    ) -> Response {
+    fn handle_detach(&mut self, kq: RawFd, session_id: Uuid, cols: u16, rows: u16) -> Response {
         let session = match self.sessions.get_mut(&session_id) {
             Some(s) => s,
             None => {
@@ -628,10 +652,7 @@ impl Server {
     /// fd passing 模式：Attached 时 master_fd 已从 kqueue 注销，不会到这里。
     /// 只在 Active/Idle 时读取 master_fd → 写入 ring_buffer。
     fn handle_session_output(&mut self, kq: RawFd, fd: RawFd) {
-        let session_id = self
-            .sessions
-            .find_by_master_fd(fd)
-            .map(|s| s.id);
+        let session_id = self.sessions.find_by_master_fd(fd).map(|s| s.id);
 
         let session_id = match session_id {
             Some(id) => id,
@@ -686,7 +707,9 @@ impl Server {
         }
         // 关闭所有残留的 pending dup_fd
         for (_, dup_fd) in self.pending_dup_fds.drain() {
-            unsafe { libc::close(dup_fd); }
+            unsafe {
+                libc::close(dup_fd);
+            }
         }
         let _ = std::fs::remove_file(&self.socket_path);
         eprintln!("[daemon] cleanup done");
