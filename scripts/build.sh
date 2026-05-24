@@ -68,26 +68,28 @@ check_build_deps() {
     # 所有目标都需要
     command -v cargo &>/dev/null || MISSING+=("cargo (Rust toolchain)")
 
-    case "$TARGETS" in
-        *memex*|*all*)
-            command -v protoc &>/dev/null || MISSING+=("protoc (brew install protobuf)")
-            command -v pnpm &>/dev/null || command -v npm &>/dev/null || MISSING+=("pnpm or npm (brew install pnpm)")
-            # 激活 fnm（如果有）
-            if command -v fnm &>/dev/null; then
-                eval "$(fnm env)" 2>/dev/null || true
-            elif [ -d "$HOME/.local/share/fnm" ]; then
-                export PATH="$HOME/.local/share/fnm:$PATH"
-                eval "$(fnm env)" 2>/dev/null || true
-            fi
-            command -v node &>/dev/null || MISSING+=("node (brew install fnm && fnm install --lts)")
-            ;;&
-        *sugarloaf*|*all*)
-            xcrun --find metal &>/dev/null 2>&1 || MISSING+=("Metal Toolchain (xcodebuild -downloadComponent MetalToolchain)")
-            ;;&
-        *etermkit*|*plugins*|*all*)
-            command -v swift &>/dev/null || MISSING+=("swift (install Xcode)")
-            ;;
-    esac
+    # memex 需要 protoc + node + pnpm
+    case "$TARGETS" in *memex*|*all*)
+        command -v protoc &>/dev/null || MISSING+=("protoc (brew install protobuf)")
+        command -v pnpm &>/dev/null || command -v npm &>/dev/null || MISSING+=("pnpm or npm (brew install pnpm)")
+        if command -v fnm &>/dev/null; then
+            eval "$(fnm env)" 2>/dev/null || true
+        elif [ -d "$HOME/.local/share/fnm" ]; then
+            export PATH="$HOME/.local/share/fnm:$PATH"
+            eval "$(fnm env)" 2>/dev/null || true
+        fi
+        command -v node &>/dev/null || MISSING+=("node (brew install fnm && fnm install --lts)")
+        ;; esac
+
+    # sugarloaf 需要 Metal Toolchain
+    case "$TARGETS" in *sugarloaf*|*all*)
+        xcrun --find metal &>/dev/null 2>&1 || MISSING+=("Metal Toolchain (xcodebuild -downloadComponent MetalToolchain)")
+        ;; esac
+
+    # Swift 插件需要 swift
+    case "$TARGETS" in *etermkit*|*plugins*|*all*)
+        command -v swift &>/dev/null || MISSING+=("swift (install Xcode)")
+        ;; esac
 
     if [ ${#MISSING[@]} -gt 0 ]; then
         log_error "Missing build dependencies:"
