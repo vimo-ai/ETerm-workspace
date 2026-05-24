@@ -20,6 +20,8 @@
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
 #   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
+#
+# 新机器首次编译前，先运行: ./scripts/init.sh
 # ============================================================================
 set -e
 
@@ -55,6 +57,48 @@ log_info() { echo -e "${BLUE}[ETerm]${NC} $*"; }
 log_success() { echo -e "${GREEN}[ETerm]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[ETerm]${NC} $*"; }
 log_error() { echo -e "${RED}[ETerm]${NC} $*"; }
+
+# ============================================================================
+# 编译依赖前置检查（只检测，不安装）
+# ============================================================================
+check_build_deps() {
+    local TARGETS="$1"
+    local MISSING=()
+
+    # 所有目标都需要
+    command -v cargo &>/dev/null || MISSING+=("cargo (Rust toolchain)")
+
+    case "$TARGETS" in
+        *memex*|*all*)
+            command -v protoc &>/dev/null || MISSING+=("protoc (brew install protobuf)")
+            command -v pnpm &>/dev/null || command -v npm &>/dev/null || MISSING+=("pnpm or npm (brew install pnpm)")
+            # 激活 fnm（如果有）
+            if command -v fnm &>/dev/null; then
+                eval "$(fnm env)" 2>/dev/null || true
+            elif [ -d "$HOME/.local/share/fnm" ]; then
+                export PATH="$HOME/.local/share/fnm:$PATH"
+                eval "$(fnm env)" 2>/dev/null || true
+            fi
+            command -v node &>/dev/null || MISSING+=("node (brew install fnm && fnm install --lts)")
+            ;;&
+        *sugarloaf*|*all*)
+            xcrun --find metal &>/dev/null 2>&1 || MISSING+=("Metal Toolchain (xcodebuild -downloadComponent MetalToolchain)")
+            ;;&
+        *etermkit*|*plugins*|*all*)
+            command -v swift &>/dev/null || MISSING+=("swift (install Xcode)")
+            ;;
+    esac
+
+    if [ ${#MISSING[@]} -gt 0 ]; then
+        log_error "Missing build dependencies:"
+        for item in "${MISSING[@]}"; do
+            echo "    - $item"
+        done
+        echo ""
+        log_info "Run ./scripts/init.sh to set up the development environment"
+        exit 1
+    fi
+}
 
 # ============================================================================
 # 编译 ETermKit SDK 并打包成 Framework
@@ -299,6 +343,15 @@ build_memex() {
         exit 1
     fi
 
+    # memex binary → MemexKit Lib（build_plugins 打包时需要）
+    local MEMEX_BIN="$MEMEX_RS/target/release/memex"
+    if [ -f "$MEMEX_BIN" ]; then
+        mkdir -p "$MEMEX_KIT/Lib"
+        cp "$MEMEX_BIN" "$MEMEX_KIT/Lib/memex"
+        chmod +x "$MEMEX_KIT/Lib/memex"
+        log_info "Memex binary staged to MemexKit/Lib/"
+    fi
+
     log_success "Memex built and deployed"
 }
 
@@ -529,6 +582,12 @@ main() {
     log_info "ETerm Build System"
     log_info "Root: $ETERM_ROOT"
     echo ""
+
+    # 依赖前置检查
+    case "$TARGET" in
+        lint|check) ;; # 不需要完整依赖
+        *) check_build_deps "$TARGET" ;;
+    esac
 
     # 构建前检查事件一致性（仅当涉及 VlaudeKit 或全量构建时）
     case "$TARGET" in
