@@ -330,7 +330,7 @@ impl Server {
                 }
             }
             if let Some(s) = self.sessions.get_mut(&id) {
-                s.detach();
+                s.detach(None); // crash detach — no snapshot available
             }
             // Re-register master_fd — daemon resumes reading shell output → ring buffer
             let _ = kq_register(kq, master_fd, libc::EVFILT_READ, libc::EV_ADD);
@@ -362,7 +362,8 @@ impl Server {
                 session_id,
                 cols,
                 rows,
-            } => self.handle_detach(kq, session_id, cols, rows),
+                grid_snapshot,
+            } => self.handle_detach(kq, session_id, cols, rows, grid_snapshot),
 
             Request::List => self.handle_list(),
 
@@ -483,9 +484,11 @@ impl Server {
         let rows = session.winsize.rows;
         let child_pid = session.child_pid;
         let shm_name = session.shm_name.clone();
+        let grid_snapshot = session.grid_snapshot.take();
         eprintln!(
-            "[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes",
-            session.shared_ring.len()
+            "[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes, snapshot={}",
+            session.shared_ring.len(),
+            grid_snapshot.is_some()
         );
 
         // Unregister master_fd from kqueue — daemon sleeps while ETerm is attached
@@ -504,6 +507,7 @@ impl Server {
             rows,
             child_pid: child_pid as i32,
             shm_name,
+            grid_snapshot,
         }
     }
 
@@ -540,13 +544,20 @@ impl Server {
             }
         }
         if let Some(session) = self.sessions.get_mut(&session_id) {
-            session.detach();
+            session.detach(None);
             // Re-register master_fd — daemon resumes reading
             let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_ADD);
         }
     }
 
-    fn handle_detach(&mut self, kq: RawFd, session_id: Uuid, cols: u16, rows: u16) -> Response {
+    fn handle_detach(
+        &mut self,
+        kq: RawFd,
+        session_id: Uuid,
+        cols: u16,
+        rows: u16,
+        grid_snapshot: Option<String>,
+    ) -> Response {
         let session = match self.sessions.get_mut(&session_id) {
             Some(s) => s,
             None => {
@@ -556,7 +567,10 @@ impl Server {
             }
         };
 
-        session.detach();
+        if grid_snapshot.is_some() {
+            eprintln!("[daemon] detach session {session_id}: received grid snapshot");
+        }
+        session.detach(grid_snapshot);
         session.winsize = WinSize { cols, rows };
         let master_fd = session.master_fd;
 

@@ -48,6 +48,8 @@ pub struct Session {
     pub owner_fd: Option<RawFd>,
     /// ETerm terminal_id（reattach 时精确映射）
     pub terminal_id: Option<u32>,
+    /// Grid snapshot bytes (base64-encoded, from ETerm on detach)
+    pub grid_snapshot: Option<String>,
 }
 
 impl Session {
@@ -77,6 +79,7 @@ impl Session {
             last_attached: None,
             owner_fd: None,
             terminal_id,
+            grid_snapshot: None,
         }
     }
 
@@ -94,9 +97,12 @@ impl Session {
     }
 
     /// 转入 detached 状态（主动或崩溃），daemon 重新接管 master_fd
-    pub fn detach(&mut self) {
+    pub fn detach(&mut self, snapshot: Option<String>) {
         self.state = SessionState::Active;
         self.owner_fd = None;
+        if snapshot.is_some() {
+            self.grid_snapshot = snapshot;
+        }
     }
 
     /// 降级到 idle（Tier 2 → Tier 3）

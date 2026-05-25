@@ -179,6 +179,7 @@ fn cmd_attach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             rows,
             child_pid,
             shm_name,
+            ..
         } => {
             // 接收 fd
             use std::os::unix::io::AsRawFd;
@@ -273,6 +274,7 @@ fn run_interactive(
                             session_id,
                             cols: 80,
                             rows: 24,
+                            grid_snapshot: None,
                         },
                     );
                     running = false;
@@ -330,6 +332,7 @@ fn cmd_detach(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             session_id: id,
             cols: 80,
             rows: 24,
+            grid_snapshot: None,
         },
     )?;
 
