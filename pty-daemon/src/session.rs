@@ -2,6 +2,7 @@
 
 use crate::ring_buffer::DEFAULT_RING_SIZE;
 use crate::shared_ring::SharedRingBuffer;
+use crate::terminal_state::TerminalState;
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::time::Instant;
@@ -50,6 +51,8 @@ pub struct Session {
     pub terminal_id: Option<u32>,
     /// Grid snapshot bytes (base64-encoded, from ETerm on detach)
     pub grid_snapshot: Option<String>,
+    /// Daemon-side ANSI parser state for crash-recovery snapshots
+    pub terminal_state: Option<TerminalState>,
 }
 
 impl Session {
@@ -80,6 +83,7 @@ impl Session {
             owner_fd: None,
             terminal_id,
             grid_snapshot: None,
+            terminal_state: Some(TerminalState::new(winsize.cols, winsize.rows)),
         }
     }
 

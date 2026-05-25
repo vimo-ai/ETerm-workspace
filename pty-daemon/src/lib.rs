@@ -5,3 +5,4 @@ pub mod ring_buffer;
 pub mod server;
 pub mod session;
 pub mod shared_ring;
+pub mod terminal_state;

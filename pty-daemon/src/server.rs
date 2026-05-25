@@ -480,6 +480,18 @@ impl Server {
             };
         }
 
+        // Capture daemon-side grid snapshot before attach.
+        // This reflects the terminal state the daemon has been tracking
+        // while in Active/Idle. On first attach (no prior detach), it
+        // gives the initial output. On reattach after crash, it gives
+        // the state the daemon parsed since it re-registered master_fd.
+        if let Some(ref ts) = session.terminal_state {
+            let daemon_snapshot = ts.capture_snapshot();
+            if daemon_snapshot.is_some() {
+                session.grid_snapshot = daemon_snapshot;
+            }
+        }
+
         let cols = session.winsize.cols;
         let rows = session.winsize.rows;
         let child_pid = session.child_pid;
@@ -627,6 +639,9 @@ impl Server {
         match self.sessions.get_mut(&session_id) {
             Some(session) => {
                 session.winsize = WinSize { cols, rows };
+                if let Some(ref mut ts) = session.terminal_state {
+                    ts.resize(cols, rows);
+                }
                 // Attached: ETerm does ioctl directly on its dup(master_fd), daemon just records
                 // Detached: daemon is responsible for ioctl
                 if session.state != SessionState::Attached {
@@ -688,6 +703,9 @@ impl Server {
             n if n > 0 => {
                 let data = &buf[..n as usize];
                 session.shared_ring.write(data);
+                if let Some(ref mut ts) = session.terminal_state {
+                    ts.feed(data);
+                }
                 session.last_active = Instant::now();
                 // eprintln!("[daemon] session {session_id} read {n} bytes from master_fd, shared_ring now {} bytes", session.shared_ring.len());
                 if session.state == SessionState::Idle {
