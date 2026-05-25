@@ -2,6 +2,7 @@
 
 use crate::ring_buffer::DEFAULT_RING_SIZE;
 use crate::shared_ring::SharedRingBuffer;
+use crate::terminal_state::TerminalState;
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::time::Instant;
@@ -48,6 +49,10 @@ pub struct Session {
     pub owner_fd: Option<RawFd>,
     /// ETerm terminal_id（reattach 时精确映射）
     pub terminal_id: Option<u32>,
+    /// Grid snapshot bytes (base64-encoded, from ETerm on detach)
+    pub grid_snapshot: Option<String>,
+    /// Daemon-side ANSI parser state for crash-recovery snapshots
+    pub terminal_state: Option<TerminalState>,
 }
 
 impl Session {
@@ -77,6 +82,8 @@ impl Session {
             last_attached: None,
             owner_fd: None,
             terminal_id,
+            grid_snapshot: None,
+            terminal_state: Some(TerminalState::new(winsize.cols, winsize.rows)),
         }
     }
 
@@ -94,9 +101,12 @@ impl Session {
     }
 
     /// 转入 detached 状态（主动或崩溃），daemon 重新接管 master_fd
-    pub fn detach(&mut self) {
+    pub fn detach(&mut self, snapshot: Option<String>) {
         self.state = SessionState::Active;
         self.owner_fd = None;
+        if snapshot.is_some() {
+            self.grid_snapshot = snapshot;
+        }
     }
 
     /// 降级到 idle（Tier 2 → Tier 3）
@@ -113,9 +123,13 @@ impl Session {
     /// 清理：关 fd，杀进程，删除共享内存
     pub fn cleanup(&mut self) {
         if self.is_child_alive() {
-            unsafe { libc::kill(self.child_pid, libc::SIGHUP); }
+            unsafe {
+                libc::kill(self.child_pid, libc::SIGHUP);
+            }
         }
-        unsafe { libc::close(self.master_fd); }
+        unsafe {
+            libc::close(self.master_fd);
+        }
         self.master_fd = -1;
         // 删除共享内存对象
         if let Err(e) = self.shared_ring.unlink() {
@@ -135,6 +149,12 @@ impl Drop for Session {
 /// Session 管理器
 pub struct SessionManager {
     sessions: HashMap<Uuid, Session>,
+}
+
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionManager {

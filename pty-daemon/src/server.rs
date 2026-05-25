@@ -102,7 +102,12 @@ impl Server {
         }
 
         // 注册 listener fd
-        kq_register(kq, self.listener.as_raw_fd(), libc::EVFILT_READ, libc::EV_ADD)?;
+        kq_register(
+            kq,
+            self.listener.as_raw_fd(),
+            libc::EVFILT_READ,
+            libc::EV_ADD,
+        )?;
 
         // 注册 SIGTERM/SIGINT — 用 kqueue EVFILT_SIGNAL 代替 signal handler
         unsafe {
@@ -215,7 +220,9 @@ impl Server {
             }
         }
 
-        unsafe { libc::close(kq); }
+        unsafe {
+            libc::close(kq);
+        }
         self.cleanup();
         Ok(())
     }
@@ -226,6 +233,17 @@ impl Server {
                 Ok((stream, _)) => {
                     stream.set_nonblocking(true)?;
                     let fd = stream.as_raw_fd();
+                    // Enlarge send buffer for large AttachReady messages (snapshot data)
+                    unsafe {
+                        let buf_size: libc::c_int = 512 * 1024; // 512KB
+                        libc::setsockopt(
+                            fd,
+                            libc::SOL_SOCKET,
+                            libc::SO_SNDBUF,
+                            &buf_size as *const _ as *const libc::c_void,
+                            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                        );
+                    }
                     eprintln!("[daemon] client connected fd={fd}");
                     kq_register(kq, fd, libc::EVFILT_READ, libc::EV_ADD)?;
                     self.clients.insert(
@@ -277,10 +295,12 @@ impl Server {
                         },
                     };
 
-                    // 发送响应
+                    // 发送响应（大消息如 AttachReady+snapshot 需要 blocking write）
                     let resp_bytes = protocol::encode_message(&response);
                     if let Some(client) = self.clients.get_mut(&fd) {
+                        client.stream.set_nonblocking(false).ok();
                         let _ = client.stream.write_all(&resp_bytes);
+                        client.stream.set_nonblocking(true).ok();
                         client.read_buf.drain(..consumed);
                     }
 
@@ -318,10 +338,19 @@ impl Server {
             // 清理可能残留的 pending dup_fd（Attach 和 send_fd 之间断开）
             if let Some(dup_fd) = self.pending_dup_fds.remove(&id) {
                 eprintln!("[daemon] closing leaked pending dup_fd={dup_fd} for session {id}");
-                unsafe { libc::close(dup_fd); }
+                unsafe {
+                    libc::close(dup_fd);
+                }
             }
             if let Some(s) = self.sessions.get_mut(&id) {
-                s.detach();
+                // Replay ring buffer history into terminal parser before transitioning.
+                // ETerm was writing to shared_ring during Attached state — this data
+                // represents the terminal content the user saw before the crash.
+                let ring_data = s.shared_ring.dump();
+                if let Some(ref mut ts) = s.terminal_state {
+                    ts.replay_history(&ring_data);
+                }
+                s.detach(None);
             }
             // Re-register master_fd — daemon resumes reading shell output → ring buffer
             let _ = kq_register(kq, master_fd, libc::EVFILT_READ, libc::EV_ADD);
@@ -337,7 +366,15 @@ impl Server {
                 working_dir,
                 terminal_id,
                 envs,
-            } => self.handle_create(kq, shell, cols, rows, working_dir, terminal_id, envs.as_ref()),
+            } => self.handle_create(
+                kq,
+                shell,
+                cols,
+                rows,
+                working_dir,
+                terminal_id,
+                envs.as_ref(),
+            ),
 
             Request::Attach { session_id } => self.handle_attach(kq, client_fd, session_id),
 
@@ -345,7 +382,8 @@ impl Server {
                 session_id,
                 cols,
                 rows,
-            } => self.handle_detach(kq, session_id, cols, rows),
+                grid_snapshot,
+            } => self.handle_detach(kq, session_id, cols, rows, grid_snapshot),
 
             Request::List => self.handle_list(),
 
@@ -381,7 +419,14 @@ impl Server {
         envs: Option<&HashMap<String, String>>,
     ) -> Response {
         let shell_str = shell.as_deref().unwrap_or("");
-        match pty::create_pty(shell_str, cols, rows, working_dir.as_deref(), terminal_id, envs) {
+        match pty::create_pty(
+            shell_str,
+            cols,
+            rows,
+            working_dir.as_deref(),
+            terminal_id,
+            envs,
+        ) {
             Ok(pty_pair) => {
                 let master_fd = pty_pair.master_fd;
                 let child_pid = pty_pair.child_pid;
@@ -424,12 +469,7 @@ impl Server {
         }
     }
 
-    fn handle_attach(
-        &mut self,
-        kq: RawFd,
-        client_fd: RawFd,
-        session_id: Uuid,
-    ) -> Response {
+    fn handle_attach(&mut self, kq: RawFd, client_fd: RawFd, session_id: Uuid) -> Response {
         let session = match self.sessions.get_mut(&session_id) {
             Some(s) => s,
             None => {
@@ -460,11 +500,40 @@ impl Server {
             };
         }
 
+        // Capture daemon-side grid snapshot before attach.
+        // This reflects the terminal state the daemon has been tracking
+        // while in Active/Idle. On first attach (no prior detach), it
+        // gives the initial output. On reattach after crash, it gives
+        // the state the daemon parsed since it re-registered master_fd.
+        if let Some(ref ts) = session.terminal_state {
+            let daemon_snapshot = ts.capture_snapshot();
+            if daemon_snapshot.is_some() {
+                session.grid_snapshot = daemon_snapshot;
+            }
+        }
+
         let cols = session.winsize.cols;
         let rows = session.winsize.rows;
         let child_pid = session.child_pid;
         let shm_name = session.shm_name.clone();
-        eprintln!("[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes", session.shared_ring.len());
+        // Write snapshot to file instead of sending via socket protocol
+        // (macOS sendmsg EMSGSIZE when send buffer has pending data)
+        if let Some(ref data) = session.grid_snapshot {
+            let path = format!("/tmp/ptyd-snap-{}.bin", &session_id.to_string()[..8]);
+            match std::fs::write(&path, data.as_bytes()) {
+                Ok(_) => eprintln!(
+                    "[daemon] attach {session_id}: snapshot → {path} ({} bytes)",
+                    data.len()
+                ),
+                Err(e) => eprintln!("[daemon] attach {session_id}: snapshot write failed: {e}"),
+            }
+        }
+        session.grid_snapshot = None;
+        let grid_snapshot: Option<String> = None;
+        eprintln!(
+            "[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes",
+            session.shared_ring.len()
+        );
 
         // Unregister master_fd from kqueue — daemon sleeps while ETerm is attached
         let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_DELETE);
@@ -482,24 +551,31 @@ impl Server {
             rows,
             child_pid: child_pid as i32,
             shm_name,
+            grid_snapshot,
         }
     }
 
     /// AttachReady 后发送 dup(master_fd)，ring data 由客户端直接从 shm 读取
     fn send_attach_data(&mut self, client_fd: RawFd, session_id: Uuid) -> io::Result<()> {
-        let dup_fd = self.pending_dup_fds.remove(&session_id)
+        let dup_fd = self
+            .pending_dup_fds
+            .remove(&session_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "dup_fd not found"))?;
 
         let raw_client_fd = match self.clients.get(&client_fd) {
             Some(c) => c.stream.as_raw_fd(),
             None => {
-                unsafe { libc::close(dup_fd); }
+                unsafe {
+                    libc::close(dup_fd);
+                }
                 return Err(io::Error::new(io::ErrorKind::NotFound, "client gone"));
             }
         };
 
         let send_result = fd_passing::send_fd(raw_client_fd, dup_fd);
-        unsafe { libc::close(dup_fd); }
+        unsafe {
+            libc::close(dup_fd);
+        }
         send_result
     }
 
@@ -507,10 +583,12 @@ impl Server {
     fn revert_attach(&mut self, kq: RawFd, session_id: Uuid) {
         // 清理 pending dup_fd
         if let Some(dup_fd) = self.pending_dup_fds.remove(&session_id) {
-            unsafe { libc::close(dup_fd); }
+            unsafe {
+                libc::close(dup_fd);
+            }
         }
         if let Some(session) = self.sessions.get_mut(&session_id) {
-            session.detach();
+            session.detach(None);
             // Re-register master_fd — daemon resumes reading
             let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_ADD);
         }
@@ -522,6 +600,7 @@ impl Server {
         session_id: Uuid,
         cols: u16,
         rows: u16,
+        grid_snapshot: Option<String>,
     ) -> Response {
         let session = match self.sessions.get_mut(&session_id) {
             Some(s) => s,
@@ -532,7 +611,10 @@ impl Server {
             }
         };
 
-        session.detach();
+        if grid_snapshot.is_some() {
+            eprintln!("[daemon] detach session {session_id}: received grid snapshot");
+        }
+        session.detach(grid_snapshot);
         session.winsize = WinSize { cols, rows };
         let master_fd = session.master_fd;
 
@@ -555,7 +637,7 @@ impl Server {
             .map(|s| SessionInfo {
                 id: s.id,
                 state: format!("{:?}", s.state),
-                child_pid: s.child_pid as i32,
+                child_pid: s.child_pid,
                 cols: s.winsize.cols,
                 rows: s.winsize.rows,
                 ptsname: s.ptsname.clone(),
@@ -589,6 +671,9 @@ impl Server {
         match self.sessions.get_mut(&session_id) {
             Some(session) => {
                 session.winsize = WinSize { cols, rows };
+                if let Some(ref mut ts) = session.terminal_state {
+                    ts.resize(cols, rows);
+                }
                 // Attached: ETerm does ioctl directly on its dup(master_fd), daemon just records
                 // Detached: daemon is responsible for ioctl
                 if session.state != SessionState::Attached {
@@ -628,10 +713,7 @@ impl Server {
     /// fd passing 模式：Attached 时 master_fd 已从 kqueue 注销，不会到这里。
     /// 只在 Active/Idle 时读取 master_fd → 写入 ring_buffer。
     fn handle_session_output(&mut self, kq: RawFd, fd: RawFd) {
-        let session_id = self
-            .sessions
-            .find_by_master_fd(fd)
-            .map(|s| s.id);
+        let session_id = self.sessions.find_by_master_fd(fd).map(|s| s.id);
 
         let session_id = match session_id {
             Some(id) => id,
@@ -653,6 +735,9 @@ impl Server {
             n if n > 0 => {
                 let data = &buf[..n as usize];
                 session.shared_ring.write(data);
+                if let Some(ref mut ts) = session.terminal_state {
+                    ts.feed(data);
+                }
                 session.last_active = Instant::now();
                 // eprintln!("[daemon] session {session_id} read {n} bytes from master_fd, shared_ring now {} bytes", session.shared_ring.len());
                 if session.state == SessionState::Idle {
@@ -686,7 +771,9 @@ impl Server {
         }
         // 关闭所有残留的 pending dup_fd
         for (_, dup_fd) in self.pending_dup_fds.drain() {
-            unsafe { libc::close(dup_fd); }
+            unsafe {
+                libc::close(dup_fd);
+            }
         }
         let _ = std::fs::remove_file(&self.socket_path);
         eprintln!("[daemon] cleanup done");

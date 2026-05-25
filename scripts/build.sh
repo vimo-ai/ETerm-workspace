@@ -20,6 +20,8 @@
 #   ./scripts/build.sh plugins   # 只构建 Swift 插件
 #   ./scripts/build.sh lint      # 运行 clippy 检查所有 Rust 项目
 #   ./scripts/build.sh check     # 只运行事件一致性检查
+#
+# 新机器首次编译前，先运行: ./scripts/init.sh
 # ============================================================================
 set -e
 
@@ -55,6 +57,50 @@ log_info() { echo -e "${BLUE}[ETerm]${NC} $*"; }
 log_success() { echo -e "${GREEN}[ETerm]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[ETerm]${NC} $*"; }
 log_error() { echo -e "${RED}[ETerm]${NC} $*"; }
+
+# ============================================================================
+# 编译依赖前置检查（只检测，不安装）
+# ============================================================================
+check_build_deps() {
+    local TARGETS="$1"
+    local MISSING=()
+
+    # 所有目标都需要
+    command -v cargo &>/dev/null || MISSING+=("cargo (Rust toolchain)")
+
+    # memex 需要 protoc + node + pnpm
+    case "$TARGETS" in *memex*|*all*)
+        command -v protoc &>/dev/null || MISSING+=("protoc (brew install protobuf)")
+        command -v pnpm &>/dev/null || command -v npm &>/dev/null || MISSING+=("pnpm or npm (brew install pnpm)")
+        if command -v fnm &>/dev/null; then
+            eval "$(fnm env)" 2>/dev/null || true
+        elif [ -d "$HOME/.local/share/fnm" ]; then
+            export PATH="$HOME/.local/share/fnm:$PATH"
+            eval "$(fnm env)" 2>/dev/null || true
+        fi
+        command -v node &>/dev/null || MISSING+=("node (brew install fnm && fnm install --lts)")
+        ;; esac
+
+    # sugarloaf 需要 Metal Toolchain
+    case "$TARGETS" in *sugarloaf*|*all*)
+        xcrun --find metal &>/dev/null 2>&1 || MISSING+=("Metal Toolchain (xcodebuild -downloadComponent MetalToolchain)")
+        ;; esac
+
+    # Swift 插件需要 swift
+    case "$TARGETS" in *etermkit*|*plugins*|*all*)
+        command -v swift &>/dev/null || MISSING+=("swift (install Xcode)")
+        ;; esac
+
+    if [ ${#MISSING[@]} -gt 0 ]; then
+        log_error "Missing build dependencies:"
+        for item in "${MISSING[@]}"; do
+            echo "    - $item"
+        done
+        echo ""
+        log_info "Run ./scripts/init.sh to set up the development environment"
+        exit 1
+    fi
+}
 
 # ============================================================================
 # 编译 ETermKit SDK 并打包成 Framework
@@ -187,6 +233,11 @@ build_socket_ffi() {
     cp "$DYLIB" "$VLAUDE_KIT/Libs/SocketClient/"
     [ -f "$HEADER" ] && cp "$HEADER" "$VLAUDE_KIT/Libs/SocketClient/"
 
+    # 修正 install name（cargo 产出的是绝对路径）
+    install_name_tool -id \
+        "@loader_path/../Libs/libsocket_client_ffi.dylib" \
+        "$VLAUDE_KIT/Libs/SocketClient/libsocket_client_ffi.dylib"
+
     # 创建 module.modulemap
     cat > "$VLAUDE_KIT/Libs/SocketClient/module.modulemap" << 'EOF'
 module SocketClientFFI {
@@ -222,6 +273,11 @@ build_vlaude_ffi() {
     cp "$DYLIB" "$VLAUDE_KIT/Libs/VlaudeFfi/"
     [ -f "$HEADER" ] && cp "$HEADER" "$VLAUDE_KIT/Libs/VlaudeFfi/"
 
+    # 修正 install name（cargo 产出的是绝对路径）
+    install_name_tool -id \
+        "@loader_path/../Libs/libvlaude_ffi.dylib" \
+        "$VLAUDE_KIT/Libs/VlaudeFfi/libvlaude_ffi.dylib"
+
     # 创建 module.modulemap
     cat > "$VLAUDE_KIT/Libs/VlaudeFfi/module.modulemap" << 'EOF'
 module VlaudeFFI {
@@ -250,6 +306,18 @@ build_sugarloaf() {
         exit 1
     fi
 
+    # skia-safe 0.93.1 (Skia m145) 的 libskia.a 与 libskshaper.a 各自内嵌一份 harfbuzz；
+    # cargo 把两者都打进 sugarloaf-ffi 的 staticlib 时会产生 70 个重复 .o，导致 ld 报
+    # "duplicate symbol" 链接失败。两份 .o 字节一致（同 sha），按 member 名去重即可。
+    local DUP_COUNT=$(ar -t "$STATIC_LIB" 2>/dev/null | sort | uniq -d | wc -l | tr -d ' ')
+    if [ "$DUP_COUNT" -gt 0 ]; then
+        log_info "Deduplicating $DUP_COUNT redundant members in libsugarloaf_ffi.a..."
+        local TMP_DIR=$(mktemp -d)
+        ( cd "$TMP_DIR" && ar -x "$STATIC_LIB" && ar -rcs "$TMP_DIR/libsugarloaf_ffi.dedup.a" *.o ) >/dev/null 2>&1
+        mv "$TMP_DIR/libsugarloaf_ffi.dedup.a" "$STATIC_LIB"
+        rm -rf "$TMP_DIR"
+    fi
+
     # 复制到 ETerm/ETerm/Libs/Sugarloaf（Xcode PROJECT_DIR 引用路径）
     log_info "Copying to ETerm/ETerm/Libs/Sugarloaf..."
     mkdir -p "$ETERM_DIR/ETerm/ETerm/Libs/Sugarloaf"
@@ -275,6 +343,15 @@ build_memex() {
     else
         log_error "memex-rs/build.sh not found"
         exit 1
+    fi
+
+    # memex binary → MemexKit Lib（build_plugins 打包时需要）
+    local MEMEX_BIN="$MEMEX_RS/target/release/memex"
+    if [ -f "$MEMEX_BIN" ]; then
+        mkdir -p "$MEMEX_KIT/Lib"
+        cp "$MEMEX_BIN" "$MEMEX_KIT/Lib/memex"
+        chmod +x "$MEMEX_KIT/Lib/memex"
+        log_info "Memex binary staged to MemexKit/Lib/"
     fi
 
     log_success "Memex built and deployed"
@@ -334,6 +411,12 @@ build_pty_daemon() {
 # 编译 dev-runner FFI
 # ============================================================================
 build_dev_runner() {
+    # NOTE(main): DevRunner is intentionally disabled on main while we
+    # stabilize the core terminal path. Keep the build logic in history and
+    # on preservation branches, but no-op here instead of deleting it.
+    log_warn "DevRunner FFI build is temporarily disabled on main"
+    return
+
     log_info "Building dev-runner FFI..."
 
     # dev-runner/app 是独立 workspace，需要单独编译
@@ -385,6 +468,11 @@ build_mcp_router() {
     cp "$DYLIB" "$MCP_ROUTER_KIT/Lib/"
     [ -f "$HEADER" ] && cp "$HEADER" "$MCP_ROUTER_KIT/Lib/"
 
+    # 修正 install name（cargo 产出的是绝对路径，换机器/目录就会挂）
+    install_name_tool -id \
+        "@loader_path/../Frameworks/libmcp_router_core.dylib" \
+        "$MCP_ROUTER_KIT/Lib/libmcp_router_core.dylib"
+
     log_success "mcp-router-core built and deployed"
 }
 
@@ -392,6 +480,12 @@ build_mcp_router() {
 # 构建 DevRunnerKit 插件
 # ============================================================================
 build_dev_runner_kit() {
+    # NOTE(main): DevRunnerKit is intentionally disabled on main while we
+    # unwind the daemon-backed terminal flow. Keep the plugin code on disk and
+    # skip packaging from the default build path for now.
+    log_warn "DevRunnerKit build is temporarily disabled on main"
+    return
+
     log_info "Building DevRunnerKit..."
 
     local DEV_RUNNER_KIT="$ETERM_DIR/Plugins/DevRunnerKit"
@@ -491,6 +585,12 @@ main() {
     log_info "Root: $ETERM_ROOT"
     echo ""
 
+    # 依赖前置检查
+    case "$TARGET" in
+        lint|check) ;; # 不需要完整依赖
+        *) check_build_deps "$TARGET" ;;
+    esac
+
     # 构建前检查事件一致性（仅当涉及 VlaudeKit 或全量构建时）
     case "$TARGET" in
         socket|vlaude-ffi|plugins|all)
@@ -528,10 +628,13 @@ main() {
             build_pty_daemon
             ;;
         dev-runner)
+            # NOTE(main): keep target name for compatibility, but short-circuit
+            # to a documented no-op while DevRunner stays off the main branch.
             build_dev_runner
             ;;
         dev-runner-kit)
-            build_etermkit  # 插件依赖 ETermKit
+            # NOTE(main): keep target name for compatibility, but do not build
+            # the plugin on main until the daemon-backed flow is re-enabled.
             build_dev_runner_kit
             ;;
         plugins)
@@ -554,6 +657,8 @@ main() {
             build_mcp_router
             build_agent
             build_pty_daemon
+            # NOTE(main): DevRunner / DevRunnerKit intentionally excluded from
+            # the default all target to keep main on the stable terminal path.
             build_dev_runner
             build_dev_runner_kit
             build_plugins

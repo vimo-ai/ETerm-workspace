@@ -36,6 +36,9 @@ pub enum Request {
         session_id: Uuid,
         cols: u16,
         rows: u16,
+        /// base64-encoded GridSnapshot bytes (captured by ETerm before detach)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grid_snapshot: Option<String>,
     },
 
     /// 列出所有 session
@@ -73,6 +76,9 @@ pub enum Response {
         child_pid: i32,
         /// 共享内存名称，客户端用于 open shm 读写终端输出
         shm_name: String,
+        /// base64-encoded GridSnapshot bytes (captured on previous detach)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grid_snapshot: Option<String>,
     },
 
     /// Attach 被拒绝（已被其他客户端 attach）

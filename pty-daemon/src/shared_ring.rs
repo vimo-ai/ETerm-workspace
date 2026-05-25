@@ -79,7 +79,7 @@ impl SharedRingBuffer {
         // 3. 计算 mmap 大小（页对齐）
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
         let required_size = HEADER_SIZE + capacity;
-        let mmap_size = ((required_size + page_size - 1) / page_size) * page_size;
+        let mmap_size = required_size.div_ceil(page_size) * page_size;
 
         // 4. ftruncate 设置大小
         let truncate_result = unsafe { libc::ftruncate(shm_fd, mmap_size as i64) };
@@ -265,11 +265,7 @@ impl SharedRingBuffer {
             // 数据比 buffer 大，只保留末尾 capacity 字节
             let start = len - self.capacity;
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data[start..].as_ptr(),
-                    self.data_ptr,
-                    self.capacity,
-                );
+                std::ptr::copy_nonoverlapping(data[start..].as_ptr(), self.data_ptr, self.capacity);
             }
             write_pos = 0;
             write_pos_atom.store(write_pos, Ordering::Release);
@@ -343,7 +339,8 @@ impl SharedRingBuffer {
             // 有回绕：从 write_pos 开始读到末尾，再从头读到 write_pos
             let tail_len = self.capacity - write_pos as usize;
             unsafe {
-                let tail = std::slice::from_raw_parts(self.data_ptr.add(write_pos as usize), tail_len);
+                let tail =
+                    std::slice::from_raw_parts(self.data_ptr.add(write_pos as usize), tail_len);
                 result.extend_from_slice(tail);
                 let head = std::slice::from_raw_parts(self.data_ptr, write_pos as usize);
                 result.extend_from_slice(head);

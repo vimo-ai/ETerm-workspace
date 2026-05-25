@@ -105,9 +105,8 @@ mod tests {
     fn test_fd_passing_roundtrip() {
         // 创建 socketpair
         let mut fds = [0i32; 2];
-        let ret = unsafe {
-            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
-        };
+        let ret =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         assert_eq!(ret, 0);
 
         // 创建一个临时 fd（用 pipe）来传递
@@ -127,16 +126,16 @@ mod tests {
         send_fd(fds[0], pipe_read).unwrap();
 
         // 传完后关掉原始的 pipe_read
-        unsafe { libc::close(pipe_read); }
+        unsafe {
+            libc::close(pipe_read);
+        }
 
         // 在另一端接收 fd
         let received_fd = recv_fd(fds[1]).unwrap();
 
         // 验证收到的 fd 可以读到数据
         let mut buf = [0u8; 16];
-        let n = unsafe {
-            libc::read(received_fd, buf.as_mut_ptr() as *mut _, buf.len())
-        };
+        let n = unsafe { libc::read(received_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         assert_eq!(n, 5);
         assert_eq!(&buf[..5], b"hello");
 
