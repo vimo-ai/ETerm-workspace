@@ -38,6 +38,17 @@ impl TerminalState {
         }
     }
 
+    pub fn replay_history(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        eprintln!(
+            "[daemon] replaying {} bytes of ring buffer history into parser",
+            data.len()
+        );
+        self.processor.advance(&mut self.crosswords, data);
+    }
+
     pub fn feed(&mut self, data: &[u8]) {
         self.processor.advance(&mut self.crosswords, data);
     }

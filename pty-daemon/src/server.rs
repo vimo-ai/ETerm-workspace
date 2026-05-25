@@ -233,6 +233,17 @@ impl Server {
                 Ok((stream, _)) => {
                     stream.set_nonblocking(true)?;
                     let fd = stream.as_raw_fd();
+                    // Enlarge send buffer for large AttachReady messages (snapshot data)
+                    unsafe {
+                        let buf_size: libc::c_int = 512 * 1024; // 512KB
+                        libc::setsockopt(
+                            fd,
+                            libc::SOL_SOCKET,
+                            libc::SO_SNDBUF,
+                            &buf_size as *const _ as *const libc::c_void,
+                            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                        );
+                    }
                     eprintln!("[daemon] client connected fd={fd}");
                     kq_register(kq, fd, libc::EVFILT_READ, libc::EV_ADD)?;
                     self.clients.insert(
@@ -284,10 +295,12 @@ impl Server {
                         },
                     };
 
-                    // 发送响应
+                    // 发送响应（大消息如 AttachReady+snapshot 需要 blocking write）
                     let resp_bytes = protocol::encode_message(&response);
                     if let Some(client) = self.clients.get_mut(&fd) {
+                        client.stream.set_nonblocking(false).ok();
                         let _ = client.stream.write_all(&resp_bytes);
+                        client.stream.set_nonblocking(true).ok();
                         client.read_buf.drain(..consumed);
                     }
 
@@ -330,7 +343,14 @@ impl Server {
                 }
             }
             if let Some(s) = self.sessions.get_mut(&id) {
-                s.detach(None); // crash detach — no snapshot available
+                // Replay ring buffer history into terminal parser before transitioning.
+                // ETerm was writing to shared_ring during Attached state — this data
+                // represents the terminal content the user saw before the crash.
+                let ring_data = s.shared_ring.dump();
+                if let Some(ref mut ts) = s.terminal_state {
+                    ts.replay_history(&ring_data);
+                }
+                s.detach(None);
             }
             // Re-register master_fd — daemon resumes reading shell output → ring buffer
             let _ = kq_register(kq, master_fd, libc::EVFILT_READ, libc::EV_ADD);
@@ -496,11 +516,23 @@ impl Server {
         let rows = session.winsize.rows;
         let child_pid = session.child_pid;
         let shm_name = session.shm_name.clone();
-        let grid_snapshot = session.grid_snapshot.take();
+        // Write snapshot to file instead of sending via socket protocol
+        // (macOS sendmsg EMSGSIZE when send buffer has pending data)
+        if let Some(ref data) = session.grid_snapshot {
+            let path = format!("/tmp/ptyd-snap-{}.bin", &session_id.to_string()[..8]);
+            match std::fs::write(&path, data.as_bytes()) {
+                Ok(_) => eprintln!(
+                    "[daemon] attach {session_id}: snapshot → {path} ({} bytes)",
+                    data.len()
+                ),
+                Err(e) => eprintln!("[daemon] attach {session_id}: snapshot write failed: {e}"),
+            }
+        }
+        session.grid_snapshot = None;
+        let grid_snapshot: Option<String> = None;
         eprintln!(
-            "[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes, snapshot={}",
-            session.shared_ring.len(),
-            grid_snapshot.is_some()
+            "[daemon] attach session {session_id}: shm={shm_name}, shared_ring {} bytes",
+            session.shared_ring.len()
         );
 
         // Unregister master_fd from kqueue — daemon sleeps while ETerm is attached
