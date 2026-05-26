@@ -1,22 +1,27 @@
-//! Unix domain socket 控制面 server
+//! Unix domain socket + WebSocket 控制面 server
 //!
 //! 单线程 kqueue 事件循环：
-//! - 监听控制 socket 新连接
+//! - 监听控制 socket 新连接（Unix domain socket）
+//! - 监听 WebSocket 连接（TCP, for iOS/LAN remote attach）
 //! - 处理客户端请求（Create/Attach/Detach/List/Kill/WinsizeUpdate）
-//! - fd passing 直连模式：Attach 时 dup(master_fd) 传给 ETerm，daemon 休眠
+//! - fd passing 直连模式：Unix socket Attach 时 dup(master_fd) 传给 ETerm，daemon 休眠
+//! - WebSocket Attach：daemon 代理 PTY I/O，不休眠，支持多客户端同时 attach
 //! - Detach/崩溃时 daemon 重新注册 master_fd，读输出写 ring_buffer
 //! - 监听 attached session 的 owner socket 断开（崩溃检测）
 
+use base64::Engine;
 use crate::fd_passing;
 use crate::protocol::{self, Request, Response, SessionInfo, PROTOCOL_VERSION};
 use crate::pty;
 use crate::session::{Session, SessionManager, SessionState, WinSize};
+use crate::ws_server::{self, WsCommand, WsSharedState};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::os::fd::RawFd;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -53,6 +58,12 @@ pub struct Server {
     running: bool,
     /// idle auto-exit: 0 sessions + 0 clients 时记录起始时刻
     idle_since: Option<Instant>,
+    /// WebSocket command receiver (from ws_server thread)
+    ws_cmd_rx: Option<std::sync::mpsc::Receiver<WsCommand>>,
+    /// WebSocket shared state (subscriber management)
+    ws_shared: Option<Arc<Mutex<WsSharedState>>>,
+    /// Self-pipe for waking kqueue when WS commands arrive
+    ws_wakeup_pipe: Option<(RawFd, RawFd)>, // (read_fd, write_fd)
 }
 
 struct ClientState {
@@ -83,6 +94,26 @@ impl Server {
 
         eprintln!("[daemon] listening on {}", socket_path.display());
 
+        // Start WebSocket server on a background thread
+        let (ws_cmd_rx, ws_shared) = ws_server::start_ws_server();
+
+        // Create self-pipe for waking kqueue when WS commands arrive
+        let mut pipe_fds = [0i32; 2];
+        let pipe_ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+        let ws_wakeup_pipe = if pipe_ret == 0 {
+            unsafe {
+                // Set both ends non-blocking
+                let flags = libc::fcntl(pipe_fds[0], libc::F_GETFL, 0);
+                libc::fcntl(pipe_fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK);
+                let flags = libc::fcntl(pipe_fds[1], libc::F_GETFL, 0);
+                libc::fcntl(pipe_fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            Some((pipe_fds[0], pipe_fds[1]))
+        } else {
+            eprintln!("[daemon] warning: failed to create self-pipe for WS wakeup");
+            None
+        };
+
         Ok(Self {
             socket_path: socket_path.to_owned(),
             listener,
@@ -91,6 +122,9 @@ impl Server {
             pending_dup_fds: HashMap::new(),
             running: true,
             idle_since: Some(Instant::now()),
+            ws_cmd_rx: Some(ws_cmd_rx),
+            ws_shared: Some(ws_shared),
+            ws_wakeup_pipe,
         })
     }
 
@@ -108,6 +142,11 @@ impl Server {
             libc::EVFILT_READ,
             libc::EV_ADD,
         )?;
+
+        // 注册 WebSocket self-pipe 读端到 kqueue
+        if let Some((read_fd, _)) = self.ws_wakeup_pipe {
+            kq_register(kq, read_fd, libc::EVFILT_READ, libc::EV_ADD)?;
+        }
 
         // 注册 SIGTERM/SIGINT — 用 kqueue EVFILT_SIGNAL 代替 signal handler
         unsafe {
@@ -146,11 +185,23 @@ impl Server {
             let dead = self.sessions.reap_dead();
             for (id, master_fd) in &dead {
                 let _ = kq_register(kq, *master_fd, libc::EVFILT_READ, libc::EV_DELETE);
+                // Notify WS subscribers that the session ended
+                if let Some(ref ws_shared) = self.ws_shared {
+                    let mut state = ws_shared.lock().unwrap();
+                    state.notify_session_ended(id);
+                }
                 eprintln!("[daemon] reaped dead session {id}");
             }
 
+            // Drain WebSocket commands (non-blocking)
+            self.drain_ws_commands(kq);
+
             // Idle auto-exit：0 sessions + 0 clients 持续 IDLE_TIMEOUT 后退出
-            if self.sessions.count() == 0 && self.clients.is_empty() {
+            let ws_has_clients = self
+                .ws_shared
+                .as_ref()
+                .map_or(false, |s| !s.lock().unwrap().client_sessions.is_empty());
+            if self.sessions.count() == 0 && self.clients.is_empty() && !ws_has_clients {
                 if let Some(since) = self.idle_since {
                     if since.elapsed() >= IDLE_TIMEOUT {
                         eprintln!("[daemon] idle timeout ({IDLE_TIMEOUT:?}), exiting");
@@ -193,11 +244,23 @@ impl Server {
                 let ev = &events[i];
                 let fd = ev.ident as RawFd;
 
+                // Check if this is the WS wakeup pipe
+                let is_ws_pipe = self
+                    .ws_wakeup_pipe
+                    .map_or(false, |(read_fd, _)| fd == read_fd);
+
                 if ev.filter == libc::EVFILT_SIGNAL {
                     let sig = ev.ident as i32;
                     eprintln!("[daemon] received signal {sig}, shutting down");
                     self.running = false;
                     break;
+                } else if is_ws_pipe {
+                    // Drain the pipe and process WS commands
+                    let mut drain_buf = [0u8; 256];
+                    unsafe {
+                        libc::read(fd, drain_buf.as_mut_ptr() as *mut _, drain_buf.len());
+                    }
+                    // Commands are drained at the top of the loop
                 } else if fd == self.listener.as_raw_fd() {
                     self.accept_clients(kq)?;
                 } else if self.clients.contains_key(&fd) {
@@ -479,10 +542,12 @@ impl Server {
             }
         };
 
+        // Deny Unix socket attach only if another Unix client is already attached.
+        // WebSocket clients are handled separately and don't block Unix attach.
         if session.state == SessionState::Attached {
             return Response::AttachDeny {
                 session_id,
-                reason: "already attached".to_string(),
+                reason: "already attached by another local client".to_string(),
             };
         }
 
@@ -656,6 +721,11 @@ impl Server {
         match self.sessions.remove(&session_id) {
             Some(mut session) => {
                 let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_DELETE);
+                // Notify WS subscribers
+                if let Some(ref ws_shared) = self.ws_shared {
+                    let mut state = ws_shared.lock().unwrap();
+                    state.notify_session_ended(&session_id);
+                }
                 session.cleanup();
                 session.master_fd = -1;
                 eprintln!("[daemon] killed session {session_id}");
@@ -704,6 +774,11 @@ impl Server {
         if let Some((id, master_fd)) = session_info {
             eprintln!("[daemon] child pid={pid} exited, cleaning session {id}");
             let _ = kq_register(kq, master_fd, libc::EVFILT_READ, libc::EV_DELETE);
+            // Notify WS subscribers
+            if let Some(ref ws_shared) = self.ws_shared {
+                let mut state = ws_shared.lock().unwrap();
+                state.notify_session_ended(&id);
+            }
             self.sessions.remove(&id);
         }
     }
@@ -739,7 +814,11 @@ impl Server {
                     ts.feed(data);
                 }
                 session.last_active = Instant::now();
-                // eprintln!("[daemon] session {session_id} read {n} bytes from master_fd, shared_ring now {} bytes", session.shared_ring.len());
+                // Broadcast to WebSocket subscribers
+                if let Some(ref ws_shared) = self.ws_shared {
+                    let state = ws_shared.lock().unwrap();
+                    state.broadcast(&session_id, data);
+                }
                 if session.state == SessionState::Idle {
                     session.promote_to_active();
                 }
@@ -759,7 +838,190 @@ impl Server {
         }
     }
 
+    /// Drain all pending WebSocket commands (non-blocking)
+    fn drain_ws_commands(&mut self, kq: RawFd) {
+        // Collect commands first to avoid borrow conflict
+        let mut commands = Vec::new();
+        let mut disconnected = false;
+
+        if let Some(ref rx) = self.ws_cmd_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(cmd) => commands.push(cmd),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        eprintln!("[daemon] ws command channel disconnected");
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if disconnected {
+            self.ws_cmd_rx = None;
+        }
+
+        for cmd in commands {
+            self.handle_ws_command(kq, cmd);
+        }
+    }
+
+    /// Handle a single WebSocket command
+    fn handle_ws_command(&mut self, kq: RawFd, cmd: WsCommand) {
+        match cmd {
+            WsCommand::Request {
+                client_id,
+                request,
+                reply_tx,
+            } => {
+                let response = match request {
+                    Request::Attach { session_id } => {
+                        self.handle_ws_attach(kq, client_id, session_id)
+                    }
+                    other => {
+                        // Use a synthetic fd=-1 for WS clients (they don't have a Unix fd)
+                        self.handle_request(kq, -1, other)
+                    }
+                };
+                let _ = reply_tx.send(response);
+            }
+            WsCommand::Disconnected { client_id } => {
+                self.handle_ws_client_disconnect(kq, client_id);
+            }
+            WsCommand::Input { session_id, data } => {
+                self.handle_ws_input(session_id, &data);
+            }
+        }
+    }
+
+    /// Handle WebSocket Attach — no fd-passing, daemon keeps reading master_fd
+    ///
+    /// Unlike Unix socket attach, the daemon stays active and proxies PTY I/O.
+    /// Multiple WS clients and one Unix client can be attached simultaneously.
+    fn handle_ws_attach(&mut self, kq: RawFd, client_id: u64, session_id: Uuid) -> Response {
+        let session = match self.sessions.get_mut(&session_id) {
+            Some(s) => s,
+            None => {
+                return Response::Error {
+                    message: format!("session {session_id} not found"),
+                }
+            }
+        };
+
+        if !session.is_child_alive() {
+            return Response::Error {
+                message: format!("session {session_id} child process is dead"),
+            };
+        }
+
+        // Capture daemon-side grid snapshot for the WS client
+        if let Some(ref ts) = session.terminal_state {
+            let daemon_snapshot = ts.capture_snapshot();
+            if daemon_snapshot.is_some() {
+                session.grid_snapshot = daemon_snapshot;
+            }
+        }
+
+        let cols = session.winsize.cols;
+        let rows = session.winsize.rows;
+        let child_pid = session.child_pid;
+        let shm_name = session.shm_name.clone();
+
+        // For WS clients, include ring buffer data in the response as initial replay data.
+        // (WS clients can't access shared memory across the network.)
+        let ring_data = session.shared_ring.dump();
+        let grid_snapshot = if !ring_data.is_empty() {
+            Some(base64::engine::general_purpose::STANDARD.encode(&ring_data))
+        } else {
+            session.grid_snapshot.take()
+        };
+
+        // If the session is currently in Active/Idle, ensure master_fd is registered in kqueue
+        // so the daemon can read output and broadcast to WS subscribers.
+        if session.state != SessionState::Attached {
+            let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_ADD);
+        }
+        // If the session is Attached by a Unix client, we still accept the WS attach.
+        // The Unix client is reading the master_fd directly; the daemon will NOT be reading
+        // master_fd (it's unregistered from kqueue). So the WS client won't get real-time
+        // output until the Unix client detaches. This is a known limitation that could be
+        // addressed in a future multi-reader architecture.
+
+        // Track the WS client attachment (subscription is set up by the ws_server module)
+        session.ws_client_count += 1;
+
+        eprintln!(
+            "[daemon] ws-attach session {session_id} by ws-client {client_id} \
+             (ws_clients={}, unix_attached={})",
+            session.ws_client_count,
+            session.state == SessionState::Attached
+        );
+
+        Response::AttachReady {
+            session_id,
+            cols,
+            rows,
+            child_pid: child_pid as i32,
+            shm_name,
+            grid_snapshot,
+        }
+    }
+
+    /// Handle input data from a WebSocket client → write to PTY master_fd
+    fn handle_ws_input(&self, session_id: Uuid, data: &[u8]) {
+        if let Some(session) = self.sessions.get(&session_id) {
+            let fd = session.master_fd;
+            let mut offset = 0;
+            while offset < data.len() {
+                let n = unsafe {
+                    libc::write(
+                        fd,
+                        data[offset..].as_ptr() as *const libc::c_void,
+                        data.len() - offset,
+                    )
+                };
+                if n <= 0 {
+                    break;
+                }
+                offset += n as usize;
+            }
+        }
+    }
+
+    /// Handle WebSocket client disconnect — clean up session attachment
+    fn handle_ws_client_disconnect(&mut self, _kq: RawFd, client_id: u64) {
+        // Find which session this client was attached to
+        let session_id = self
+            .ws_shared
+            .as_ref()
+            .and_then(|s| s.lock().unwrap().client_sessions.get(&client_id).copied());
+
+        if let Some(session_id) = session_id {
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                if session.ws_client_count > 0 {
+                    session.ws_client_count -= 1;
+                }
+                eprintln!(
+                    "[daemon] ws-client {client_id} disconnected from session {session_id} \
+                     (remaining ws_clients={})",
+                    session.ws_client_count
+                );
+            }
+            // Unsubscribe is handled by the ws_server module
+        }
+    }
+
     fn cleanup(&mut self) {
+        // Notify all WS subscribers that sessions are ending
+        if let Some(ref ws_shared) = self.ws_shared {
+            let mut state = ws_shared.lock().unwrap();
+            let session_ids: Vec<Uuid> = state.subscribers.keys().copied().collect();
+            for id in session_ids {
+                state.notify_session_ended(&id);
+            }
+        }
+
         // 清理所有存活 session（kill 子进程，关 fd，unlink shm）
         let ids: Vec<Uuid> = self.sessions.list().iter().map(|s| s.id).collect();
         for id in ids {
@@ -773,6 +1035,13 @@ impl Server {
         for (_, dup_fd) in self.pending_dup_fds.drain() {
             unsafe {
                 libc::close(dup_fd);
+            }
+        }
+        // Close self-pipe
+        if let Some((read_fd, write_fd)) = self.ws_wakeup_pipe.take() {
+            unsafe {
+                libc::close(read_fd);
+                libc::close(write_fd);
             }
         }
         let _ = std::fs::remove_file(&self.socket_path);

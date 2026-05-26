@@ -15,3 +15,6 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 terminal-core = { path = "../ETerm/rio/terminal-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
+tokio-tungstenite = "0.26"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }

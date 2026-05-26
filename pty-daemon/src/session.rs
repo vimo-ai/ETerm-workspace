@@ -53,6 +53,8 @@ pub struct Session {
     pub grid_snapshot: Option<String>,
     /// Daemon-side ANSI parser state for crash-recovery snapshots
     pub terminal_state: Option<TerminalState>,
+    /// Number of WebSocket clients currently attached to this session
+    pub ws_client_count: u32,
 }
 
 impl Session {
@@ -84,6 +86,7 @@ impl Session {
             terminal_id,
             grid_snapshot: None,
             terminal_state: Some(TerminalState::new(winsize.cols, winsize.rows)),
+            ws_client_count: 0,
         }
     }
 

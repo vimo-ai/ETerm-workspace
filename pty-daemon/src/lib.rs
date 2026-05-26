@@ -6,3 +6,4 @@ pub mod server;
 pub mod session;
 pub mod shared_ring;
 pub mod terminal_state;
+pub mod ws_server;
