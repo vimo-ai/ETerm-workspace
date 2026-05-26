@@ -11,7 +11,7 @@
 
 use base64::Engine;
 use crate::fd_passing;
-use crate::protocol::{self, Request, Response, SessionInfo, PROTOCOL_VERSION};
+use crate::protocol::{self, Push, PushAck, Request, Response, SessionInfo, PROTOCOL_VERSION};
 use crate::pty;
 use crate::session::{Session, SessionManager, SessionState, WinSize};
 use crate::ws_server::{self, WsCommand, WsSharedState};
@@ -27,6 +27,9 @@ use uuid::Uuid;
 
 /// Idle timeout: daemon exits after this duration with 0 sessions and 0 clients
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Baton-pass timeout: how long to wait for ETerm's DetachAck before force-proceeding
+const BATON_PASS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// kqueue 注册/注销（自由函数，避免 borrow 冲突）
 fn kq_register(kq: RawFd, fd: RawFd, filter: i16, flags: u16) -> io::Result<()> {
@@ -387,6 +390,14 @@ impl Server {
         let _ = kq_register(kq, fd, libc::EVFILT_READ, libc::EV_DELETE);
         self.clients.remove(&fd);
 
+        // Clear previous_owner_fd for any sessions that referenced this client.
+        // This prevents baton-release attempts to a dead socket.
+        for session in self.sessions.list_mut() {
+            if session.previous_owner_fd == Some(fd) {
+                session.previous_owner_fd = None;
+            }
+        }
+
         // 收集需要 crash detach 的 session id + master_fd
         let to_detach: Vec<(Uuid, RawFd)> = self
             .sessions
@@ -680,16 +691,338 @@ impl Server {
             eprintln!("[daemon] detach session {session_id}: received grid snapshot");
         }
         session.detach(grid_snapshot);
-        session.winsize = WinSize { cols, rows };
         let master_fd = session.master_fd;
 
         // Re-register master_fd — daemon resumes reading shell output → ring buffer
         let _ = kq_register(kq, master_fd, libc::EVFILT_READ, libc::EV_ADD);
 
-        // Detached: daemon is responsible for ioctl
-        let _ = pty::set_winsize(master_fd, cols, rows);
+        // Only update winsize if cols/rows are non-zero.
+        // WS clients (iPhone) send 0,0 to indicate "don't change PTY dimensions"
+        // — they observe at the original size and scale-to-fit on their end.
+        if cols > 0 && rows > 0 {
+            session.winsize = WinSize { cols, rows };
+            let _ = pty::set_winsize(master_fd, cols, rows);
+        }
 
         eprintln!("[daemon] detach session {session_id}");
+        Response::Detached { session_id }
+    }
+
+    /// Baton-pass takeover: WS client requests detach of an ETerm-attached session.
+    ///
+    /// Instead of immediately re-registering master_fd (which would cause two readers),
+    /// we send ForceDetach to ETerm, wait for DetachAck with grid snapshot, then
+    /// re-register master_fd as sole reader.
+    ///
+    /// Returns (Response for WS client, grid_snapshot from ETerm if obtained).
+    fn handle_baton_takeover(
+        &mut self,
+        kq: RawFd,
+        session_id: Uuid,
+    ) -> Response {
+        let session = match self.sessions.get(&session_id) {
+            Some(s) => s,
+            None => {
+                return Response::Error {
+                    message: format!("session {session_id} not found"),
+                }
+            }
+        };
+
+        if session.state != SessionState::Attached {
+            // Not attached by ETerm — just do normal detach (no baton needed)
+            return self.handle_detach(kq, session_id, 0, 0, None);
+        }
+
+        let owner_fd = match session.owner_fd {
+            Some(fd) => fd,
+            None => {
+                // Attached but no owner_fd — should not happen, treat as force detach
+                eprintln!("[daemon] baton-takeover: session {session_id} attached but no owner_fd, force detach");
+                return self.handle_detach(kq, session_id, 0, 0, None);
+            }
+        };
+
+        // Step 1: Send ForceDetach push to ETerm's control socket
+        let push = Push::ForceDetach { session_id };
+        let push_bytes = protocol::encode_message(&push);
+
+        let send_ok = if let Some(client) = self.clients.get_mut(&owner_fd) {
+            client.stream.set_nonblocking(false).ok();
+            let _ = client.stream.set_write_timeout(Some(Duration::from_secs(2)));
+            let result = client.stream.write_all(&push_bytes);
+            client.stream.set_nonblocking(true).ok();
+            result.is_ok()
+        } else {
+            false
+        };
+
+        if !send_ok {
+            eprintln!(
+                "[daemon] baton-takeover: failed to send ForceDetach to fd={owner_fd}, force detach"
+            );
+            // ETerm's control socket is broken — treat as crash
+            return self.force_complete_takeover(kq, session_id, None);
+        }
+
+        eprintln!("[daemon] baton-takeover: sent ForceDetach to ETerm fd={owner_fd}, waiting for DetachAck");
+
+        // Step 2: Wait for DetachAck with timeout
+        let grid_snapshot = self.wait_for_detach_ack(owner_fd, session_id);
+
+        // Step 3: Complete the takeover
+        self.force_complete_takeover(kq, session_id, grid_snapshot)
+    }
+
+    /// Wait for DetachAck from ETerm on the control socket, with timeout.
+    ///
+    /// Returns the grid_snapshot if ETerm responded, or None on timeout/error.
+    fn wait_for_detach_ack(
+        &mut self,
+        owner_fd: RawFd,
+        session_id: Uuid,
+    ) -> Option<String> {
+        let client = match self.clients.get_mut(&owner_fd) {
+            Some(c) => c,
+            None => return None,
+        };
+
+        // Set blocking with timeout for the read
+        client.stream.set_nonblocking(false).ok();
+        let _ = client.stream.set_read_timeout(Some(BATON_PASS_TIMEOUT));
+
+        let mut tmp = [0u8; 65536];
+        let deadline = Instant::now() + BATON_PASS_TIMEOUT;
+
+        loop {
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "[daemon] baton-takeover: DetachAck timeout for session {session_id}"
+                );
+                client.stream.set_nonblocking(true).ok();
+                return None;
+            }
+
+            match client.stream.read(&mut tmp) {
+                Ok(0) => {
+                    eprintln!("[daemon] baton-takeover: ETerm closed socket during wait");
+                    client.stream.set_nonblocking(true).ok();
+                    return None;
+                }
+                Ok(n) => {
+                    client.read_buf.extend_from_slice(&tmp[..n]);
+                }
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut
+                    {
+                        eprintln!(
+                            "[daemon] baton-takeover: DetachAck timed out for session {session_id}"
+                        );
+                    } else {
+                        eprintln!(
+                            "[daemon] baton-takeover: read error waiting for DetachAck: {e}"
+                        );
+                    }
+                    client.stream.set_nonblocking(true).ok();
+                    return None;
+                }
+            }
+
+            // Try to decode PushAck from the buffer
+            let buf_snapshot = client.read_buf.clone();
+            if let Some((result, consumed)) =
+                protocol::try_decode_message::<PushAck>(&buf_snapshot)
+            {
+                client.read_buf.drain(..consumed);
+                client.stream.set_nonblocking(true).ok();
+
+                match result {
+                    Ok(PushAck::DetachAck {
+                        session_id: ack_sid,
+                        grid_snapshot,
+                    }) => {
+                        if ack_sid == session_id {
+                            eprintln!(
+                                "[daemon] baton-takeover: received DetachAck for session {session_id} (snapshot={})",
+                                grid_snapshot.is_some()
+                            );
+                            return grid_snapshot;
+                        }
+                        // Wrong session — unexpected but log and return None
+                        eprintln!(
+                            "[daemon] baton-takeover: DetachAck for wrong session: expected {session_id}, got {ack_sid}"
+                        );
+                        return None;
+                    }
+                    Ok(other) => {
+                        eprintln!(
+                            "[daemon] baton-takeover: unexpected PushAck variant: {:?}", other
+                        );
+                        return None;
+                    }
+                    Err(e) => {
+                        // Might be a regular Request instead of PushAck — try decoding as Request
+                        // If ETerm sends a normal Detach request instead of PushAck, handle gracefully
+                        eprintln!(
+                            "[daemon] baton-takeover: PushAck decode error: {e}, ignoring"
+                        );
+                        return None;
+                    }
+                }
+            }
+            // Not enough data yet — continue reading
+        }
+    }
+
+    /// Complete a baton-pass takeover after ForceDetach (whether we got DetachAck or timed out).
+    ///
+    /// Re-registers master_fd so daemon becomes sole reader, stores snapshot if provided.
+    fn force_complete_takeover(
+        &mut self,
+        kq: RawFd,
+        session_id: Uuid,
+        grid_snapshot: Option<String>,
+    ) -> Response {
+        let session = match self.sessions.get_mut(&session_id) {
+            Some(s) => s,
+            None => {
+                return Response::Error {
+                    message: format!("session {session_id} not found"),
+                }
+            }
+        };
+
+        // Store the grid snapshot from ETerm (the baton).
+        // Use baton_detach to preserve previous_owner_fd for later baton-release.
+        session.baton_detach(grid_snapshot);
+        let master_fd = session.master_fd;
+
+        // Re-register master_fd — daemon is now the sole reader
+        let _ = kq_register(kq, master_fd, libc::EVFILT_READ, libc::EV_ADD);
+
+        eprintln!("[daemon] baton-takeover: completed for session {session_id}");
+        Response::Detached { session_id }
+    }
+
+    /// Baton-pass release: WS client disconnects / detaches, offer session back to ETerm.
+    ///
+    /// The daemon has been reading master_fd while the WS client was attached.
+    /// Capture the daemon's grid snapshot and push ResumeAttach to ETerm.
+    fn handle_baton_release(
+        &mut self,
+        kq: RawFd,
+        session_id: Uuid,
+    ) -> Response {
+        let session = match self.sessions.get_mut(&session_id) {
+            Some(s) => s,
+            None => {
+                return Response::Error {
+                    message: format!("session {session_id} not found"),
+                }
+            }
+        };
+
+        // Only do baton release if session has a previous owner that we can push to.
+        // After a takeover, owner_fd is cleared. We need to find an ETerm client
+        // that was previously attached. For now, look for the original owner from
+        // the session's context.
+        //
+        // In the current design, after baton takeover the owner_fd is None.
+        // We need to store the original ETerm client_fd to push ResumeAttach.
+        // This is tracked by `previous_owner_fd` added to the Session struct.
+        let prev_owner_fd = match session.previous_owner_fd {
+            Some(fd) => fd,
+            None => {
+                eprintln!(
+                    "[daemon] baton-release: no previous owner for session {session_id}, normal detach"
+                );
+                return self.handle_detach(kq, session_id, 0, 0, None);
+            }
+        };
+
+        // Check if the previous owner is still connected
+        if !self.clients.contains_key(&prev_owner_fd) {
+            eprintln!(
+                "[daemon] baton-release: previous owner fd={prev_owner_fd} disconnected"
+            );
+            session.previous_owner_fd = None;
+            return self.handle_detach(kq, session_id, 0, 0, None);
+        }
+
+        // Capture daemon's grid snapshot (daemon has been reading, its state is current)
+        let grid_snapshot = session
+            .terminal_state
+            .as_ref()
+            .and_then(|ts| ts.capture_snapshot());
+
+        // dup(master_fd) for ETerm
+        let dup_fd = unsafe { libc::dup(session.master_fd) };
+        if dup_fd < 0 {
+            eprintln!(
+                "[daemon] baton-release: dup(master_fd) failed: {}",
+                io::Error::last_os_error()
+            );
+            return self.handle_detach(kq, session_id, 0, 0, None);
+        }
+
+        let cols = session.winsize.cols;
+        let rows = session.winsize.rows;
+        let child_pid = session.child_pid;
+        let shm_name = session.shm_name.clone();
+
+        // Send ResumeAttach push to ETerm
+        let push = Push::ResumeAttach {
+            session_id,
+            cols,
+            rows,
+            child_pid: child_pid as i32,
+            shm_name: shm_name.clone(),
+            grid_snapshot: grid_snapshot.clone(),
+        };
+        let push_bytes = protocol::encode_message(&push);
+
+        let send_ok = if let Some(client) = self.clients.get_mut(&prev_owner_fd) {
+            client.stream.set_nonblocking(false).ok();
+            let _ = client.stream.set_write_timeout(Some(Duration::from_secs(2)));
+            let result = client.stream.write_all(&push_bytes);
+            if result.is_ok() {
+                // Also send the dup_fd via SCM_RIGHTS
+                let fd_result = fd_passing::send_fd(client.stream.as_raw_fd(), dup_fd);
+                client.stream.set_nonblocking(true).ok();
+                unsafe { libc::close(dup_fd); }
+                fd_result.is_ok()
+            } else {
+                client.stream.set_nonblocking(true).ok();
+                unsafe { libc::close(dup_fd); }
+                false
+            }
+        } else {
+            unsafe { libc::close(dup_fd); }
+            false
+        };
+
+        if !send_ok {
+            eprintln!(
+                "[daemon] baton-release: failed to send ResumeAttach to fd={prev_owner_fd}"
+            );
+            session.previous_owner_fd = None;
+            return self.handle_detach(kq, session_id, 0, 0, grid_snapshot);
+        }
+
+        // Unregister master_fd from kqueue — ETerm is now the reader again
+        let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_DELETE);
+
+        // Transition to Attached state with the previous owner
+        session.attach(prev_owner_fd);
+        // Clear previous_owner_fd since we've restored the attach
+        session.previous_owner_fd = None;
+
+        // Store dup_fd in pending (not needed since we already sent it, but keep consistent)
+        // The fd was already sent above, no need for pending_dup_fds.
+
+        eprintln!(
+            "[daemon] baton-release: session {session_id} returned to ETerm fd={prev_owner_fd}"
+        );
         Response::Detached { session_id }
     }
 
@@ -740,14 +1073,20 @@ impl Server {
     fn handle_winsize_update(&mut self, session_id: Uuid, cols: u16, rows: u16) -> Response {
         match self.sessions.get_mut(&session_id) {
             Some(session) => {
+                let size_changed = session.winsize.cols != cols || session.winsize.rows != rows;
                 session.winsize = WinSize { cols, rows };
                 if let Some(ref mut ts) = session.terminal_state {
                     ts.resize(cols, rows);
                 }
                 // Attached: ETerm does ioctl directly on its dup(master_fd), daemon just records
-                // Detached: daemon is responsible for ioctl
+                // Detached: daemon is responsible for ioctl + SIGWINCH
                 if session.state != SessionState::Attached {
                     let _ = pty::set_winsize(session.master_fd, cols, rows);
+                    // ioctl only sends SIGWINCH if size changed. If same size,
+                    // explicitly signal so programs redraw (e.g. after WS takeover).
+                    if !size_changed {
+                        unsafe { libc::kill(session.child_pid, libc::SIGWINCH); }
+                    }
                 }
                 Response::WinsizeUpdated { session_id }
             }
@@ -879,6 +1218,10 @@ impl Server {
                     Request::Attach { session_id } => {
                         self.handle_ws_attach(kq, client_id, session_id)
                     }
+                    // WS Detach on an ETerm-attached session → baton-pass takeover
+                    Request::Detach { session_id, .. } => {
+                        self.handle_ws_detach(kq, client_id, session_id)
+                    }
                     other => {
                         // Use a synthetic fd=-1 for WS clients (they don't have a Unix fd)
                         self.handle_request(kq, -1, other)
@@ -892,6 +1235,40 @@ impl Server {
             WsCommand::Input { session_id, data } => {
                 self.handle_ws_input(session_id, &data);
             }
+        }
+    }
+
+    /// Handle WebSocket Detach — routes to the appropriate handler:
+    ///
+    /// 1. If ETerm is currently attached (takeover): baton-pass takeover
+    /// 2. If ETerm was previously attached and is waiting (release): baton-pass release
+    /// 3. Otherwise: normal detach
+    fn handle_ws_detach(&mut self, kq: RawFd, _client_id: u64, session_id: Uuid) -> Response {
+        let (is_eterm_attached, has_previous_owner) = self
+            .sessions
+            .get(&session_id)
+            .map_or((false, false), |s| {
+                (
+                    s.state == SessionState::Attached,
+                    s.previous_owner_fd.is_some(),
+                )
+            });
+
+        if is_eterm_attached {
+            // ETerm owns this session — initiate baton-pass takeover
+            eprintln!(
+                "[daemon] ws-detach: session {session_id} is ETerm-attached, initiating baton-pass takeover"
+            );
+            self.handle_baton_takeover(kq, session_id)
+        } else if has_previous_owner {
+            // iPhone is releasing — return session to ETerm via baton-pass release
+            eprintln!(
+                "[daemon] ws-detach: session {session_id} has previous ETerm owner, baton-pass release"
+            );
+            self.handle_baton_release(kq, session_id)
+        } else {
+            // No ETerm involved — normal detach
+            self.handle_detach(kq, session_id, 0, 0, None)
         }
     }
 
@@ -989,8 +1366,11 @@ impl Server {
         }
     }
 
-    /// Handle WebSocket client disconnect — clean up session attachment
-    fn handle_ws_client_disconnect(&mut self, _kq: RawFd, client_id: u64) {
+    /// Handle WebSocket client disconnect — clean up session attachment.
+    ///
+    /// If this was the last WS client and the session has a previous ETerm owner,
+    /// trigger baton-release to return the session to ETerm.
+    fn handle_ws_client_disconnect(&mut self, kq: RawFd, client_id: u64) {
         // Find which session this client was attached to
         let session_id = self
             .ws_shared
@@ -998,7 +1378,7 @@ impl Server {
             .and_then(|s| s.lock().unwrap().client_sessions.get(&client_id).copied());
 
         if let Some(session_id) = session_id {
-            if let Some(session) = self.sessions.get_mut(&session_id) {
+            let should_release = if let Some(session) = self.sessions.get_mut(&session_id) {
                 if session.ws_client_count > 0 {
                     session.ws_client_count -= 1;
                 }
@@ -1007,6 +1387,18 @@ impl Server {
                      (remaining ws_clients={})",
                     session.ws_client_count
                 );
+                // Trigger baton-release if this was the last WS client and
+                // there's a previous ETerm owner waiting
+                session.ws_client_count == 0 && session.previous_owner_fd.is_some()
+            } else {
+                false
+            };
+
+            if should_release {
+                eprintln!(
+                    "[daemon] ws-client {client_id}: last WS client left session {session_id}, baton-release to ETerm"
+                );
+                self.handle_baton_release(kq, session_id);
             }
             // Unsubscribe is handled by the ws_server module
         }

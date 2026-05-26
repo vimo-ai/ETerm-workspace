@@ -61,6 +61,59 @@ pub enum Request {
     Shutdown,
 }
 
+/// Server-initiated push messages (daemon → ETerm)
+///
+/// These are sent by the daemon to an attached ETerm client over the existing
+/// control Unix socket. They are NOT responses to requests — they are
+/// unsolicited push notifications that require the client to act.
+///
+/// Wire format: identical to Request/Response (4-byte BE length + JSON).
+/// Discriminated by the `"type"` tag field (e.g. `"ForceDetach"`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Push {
+    /// Daemon requests ETerm to release a session (iPhone takeover).
+    ///
+    /// ETerm must:
+    /// 1. Capture its grid snapshot
+    /// 2. Close its dup(master_fd)
+    /// 3. Send DetachAck back on the same control socket
+    ForceDetach { session_id: Uuid },
+
+    /// Daemon offers a session back to ETerm (iPhone released).
+    ///
+    /// Contains the daemon's grid snapshot captured while it was reading.
+    /// ETerm must re-attach (gets new dup_fd) and apply the snapshot.
+    ResumeAttach {
+        session_id: Uuid,
+        cols: u16,
+        rows: u16,
+        child_pid: i32,
+        shm_name: String,
+        /// base64-encoded GridSnapshot bytes (daemon's view while it was reading)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grid_snapshot: Option<String>,
+    },
+}
+
+/// Client acknowledgment of a Push message (ETerm → daemon)
+///
+/// Sent over the same control socket in response to a Push.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PushAck {
+    /// ETerm has released the session and provides its grid snapshot.
+    DetachAck {
+        session_id: Uuid,
+        /// base64-encoded GridSnapshot bytes captured by ETerm before closing dup_fd
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grid_snapshot: Option<String>,
+    },
+
+    /// ETerm has re-attached and applied the snapshot.
+    ResumeAck { session_id: Uuid },
+}
+
 /// 控制面响应
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -154,4 +207,212 @@ pub fn try_decode_message<T: for<'de> Deserialize<'de>>(
     let payload = &buf[4..4 + len];
     let result = serde_json::from_slice(payload).map_err(|e| e.to_string());
     Some((result, 4 + len))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // B16: Push::ForceDetach serialize/deserialize roundtrip
+    #[test]
+    fn push_force_detach_roundtrip() {
+        let session_id = Uuid::new_v4();
+        let msg = Push::ForceDetach { session_id };
+
+        let json = serde_json::to_string(&msg).unwrap();
+
+        // The JSON tag must be "ForceDetach"
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(raw["type"], "ForceDetach");
+        assert_eq!(raw["session_id"], session_id.to_string());
+
+        // Deserialize back and verify session_id is preserved
+        let decoded: Push = serde_json::from_str(&json).unwrap();
+        match decoded {
+            Push::ForceDetach { session_id: sid } => {
+                assert_eq!(sid, session_id);
+            }
+            other => panic!("expected ForceDetach, got: {other:?}"),
+        }
+    }
+
+    // B17: Push::ResumeAttach with and without grid_snapshot
+    #[test]
+    fn push_resume_attach_with_snapshot() {
+        let session_id = Uuid::new_v4();
+        let snapshot = Some("base64data==".to_string());
+        let msg = Push::ResumeAttach {
+            session_id,
+            cols: 120,
+            rows: 40,
+            child_pid: 12345,
+            shm_name: "/ptyd-test".to_string(),
+            grid_snapshot: snapshot.clone(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(raw["type"], "ResumeAttach");
+        assert_eq!(raw["grid_snapshot"], "base64data==");
+
+        let decoded: Push = serde_json::from_str(&json).unwrap();
+        match decoded {
+            Push::ResumeAttach {
+                session_id: sid,
+                cols,
+                rows,
+                child_pid,
+                shm_name,
+                grid_snapshot,
+            } => {
+                assert_eq!(sid, session_id);
+                assert_eq!(cols, 120);
+                assert_eq!(rows, 40);
+                assert_eq!(child_pid, 12345);
+                assert_eq!(shm_name, "/ptyd-test");
+                assert_eq!(grid_snapshot, snapshot);
+            }
+            other => panic!("expected ResumeAttach, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn push_resume_attach_without_snapshot() {
+        let session_id = Uuid::new_v4();
+        let msg = Push::ResumeAttach {
+            session_id,
+            cols: 80,
+            rows: 24,
+            child_pid: 999,
+            shm_name: "/ptyd-nosnapshot".to_string(),
+            grid_snapshot: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // skip_serializing_if = "Option::is_none" must omit the field entirely
+        assert!(
+            raw.get("grid_snapshot").is_none(),
+            "grid_snapshot should be absent when None, got: {json}"
+        );
+
+        let decoded: Push = serde_json::from_str(&json).unwrap();
+        match decoded {
+            Push::ResumeAttach { grid_snapshot, .. } => {
+                assert_eq!(grid_snapshot, None);
+            }
+            other => panic!("expected ResumeAttach, got: {other:?}"),
+        }
+    }
+
+    // B18: PushAck::DetachAck with and without grid_snapshot
+    #[test]
+    fn push_ack_detach_ack_with_snapshot() {
+        let session_id = Uuid::new_v4();
+        let msg = PushAck::DetachAck {
+            session_id,
+            grid_snapshot: Some("snapshot_data".to_string()),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(raw["type"], "DetachAck");
+        assert_eq!(raw["grid_snapshot"], "snapshot_data");
+
+        let decoded: PushAck = serde_json::from_str(&json).unwrap();
+        match decoded {
+            PushAck::DetachAck {
+                session_id: sid,
+                grid_snapshot,
+            } => {
+                assert_eq!(sid, session_id);
+                assert_eq!(grid_snapshot, Some("snapshot_data".to_string()));
+            }
+            other => panic!("expected DetachAck, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn push_ack_detach_ack_without_snapshot() {
+        let session_id = Uuid::new_v4();
+        let msg = PushAck::DetachAck {
+            session_id,
+            grid_snapshot: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // skip_serializing_if must omit the field
+        assert!(
+            raw.get("grid_snapshot").is_none(),
+            "grid_snapshot should be absent when None, got: {json}"
+        );
+
+        let decoded: PushAck = serde_json::from_str(&json).unwrap();
+        match decoded {
+            PushAck::DetachAck { grid_snapshot, .. } => {
+                assert_eq!(grid_snapshot, None);
+            }
+            other => panic!("expected DetachAck, got: {other:?}"),
+        }
+    }
+
+    // B19: 4-byte BE length prefix encode_message → try_decode_message roundtrip
+    #[test]
+    fn length_prefix_roundtrip_push() {
+        let session_id = Uuid::new_v4();
+        let original = Push::ForceDetach { session_id };
+
+        let encoded = encode_message(&original);
+
+        // First 4 bytes are BE length
+        let payload_len = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
+        assert_eq!(payload_len as usize, encoded.len() - 4);
+
+        // Full decode
+        let (result, consumed) = try_decode_message::<Push>(&encoded).expect("buffer should be complete");
+        assert_eq!(consumed, encoded.len());
+        let decoded = result.expect("deserialization should succeed");
+        match decoded {
+            Push::ForceDetach { session_id: sid } => assert_eq!(sid, session_id),
+            other => panic!("expected ForceDetach, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn length_prefix_roundtrip_push_ack() {
+        let session_id = Uuid::new_v4();
+        let original = PushAck::ResumeAck { session_id };
+
+        let encoded = encode_message(&original);
+
+        let payload_len = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
+        assert_eq!(payload_len as usize, encoded.len() - 4);
+
+        let (result, consumed) =
+            try_decode_message::<PushAck>(&encoded).expect("buffer should be complete");
+        assert_eq!(consumed, encoded.len());
+        let decoded = result.expect("deserialization should succeed");
+        match decoded {
+            PushAck::ResumeAck { session_id: sid } => assert_eq!(sid, session_id),
+            other => panic!("expected ResumeAck, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_decode_returns_none_on_incomplete_header() {
+        // Less than 4 bytes: should return None (not enough data)
+        assert!(try_decode_message::<Push>(&[0u8; 3]).is_none());
+    }
+
+    #[test]
+    fn try_decode_returns_none_on_incomplete_payload() {
+        // Header says 100 bytes but only 10 bytes of payload provided
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&100u32.to_be_bytes());
+        buf.extend_from_slice(&[0u8; 10]);
+        assert!(try_decode_message::<Push>(&buf).is_none());
+    }
 }
