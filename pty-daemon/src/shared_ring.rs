@@ -392,6 +392,46 @@ impl SharedRingBuffer {
         self.total_written_atomic().load(Ordering::Acquire)
     }
 
+    /// 增量读取自 `last_total` 以来写入的新字节。
+    ///
+    /// 返回 `(new_data, current_total_written)`。
+    /// 如果读者落后超过 capacity（ring overrun），fallback 到 dump()。
+    pub fn read_since(&self, last_total: u64) -> (Vec<u8>, u64) {
+        let total = self.total_written_atomic().load(Ordering::Acquire);
+        if total <= last_total {
+            return (Vec::new(), total);
+        }
+
+        let new_bytes = (total - last_total) as usize;
+        if new_bytes >= self.capacity {
+            return (self.dump(), total);
+        }
+
+        let write_pos = self.write_pos_atomic().load(Ordering::Acquire) as usize;
+
+        let start = if write_pos >= new_bytes {
+            write_pos - new_bytes
+        } else {
+            self.capacity - (new_bytes - write_pos)
+        };
+
+        let mut result = Vec::with_capacity(new_bytes);
+        unsafe {
+            if start + new_bytes <= self.capacity {
+                let slice = std::slice::from_raw_parts(self.data_ptr.add(start), new_bytes);
+                result.extend_from_slice(slice);
+            } else {
+                let first = self.capacity - start;
+                let tail = std::slice::from_raw_parts(self.data_ptr.add(start), first);
+                result.extend_from_slice(tail);
+                let head = std::slice::from_raw_parts(self.data_ptr, new_bytes - first);
+                result.extend_from_slice(head);
+            }
+        }
+
+        (result, total)
+    }
+
     /// 清空缓冲区
     pub fn clear(&self) {
         self.write_pos_atomic().store(0, Ordering::Release);
@@ -566,6 +606,61 @@ mod tests {
 
         // dump 应该返回空（检测到 magic 错误）
         assert!(ring.dump().is_empty());
+
+        ring.unlink().unwrap();
+    }
+
+    #[test]
+    fn test_read_since_basic() {
+        let shm_name = test_shm_name("rsince");
+        let ring = SharedRingBuffer::create(&shm_name, 64).unwrap();
+
+        let t0 = ring.total_written();
+        ring.write(b"hello");
+        let (data, t1) = ring.read_since(t0);
+        assert_eq!(data, b"hello");
+        assert_eq!(t1, 5);
+
+        ring.write(b" world");
+        let (data, t2) = ring.read_since(t1);
+        assert_eq!(data, b" world");
+        assert_eq!(t2, 11);
+
+        // No new data
+        let (data, t3) = ring.read_since(t2);
+        assert!(data.is_empty());
+        assert_eq!(t3, t2);
+
+        ring.unlink().unwrap();
+    }
+
+    #[test]
+    fn test_read_since_wraparound() {
+        let shm_name = test_shm_name("rswrap");
+        let ring = SharedRingBuffer::create(&shm_name, 16).unwrap();
+
+        ring.write(b"0123456789ab"); // 12 bytes, write_pos = 12
+        let t0 = ring.total_written();
+
+        ring.write(b"cdef01"); // 6 bytes, wraps: write_pos = (12+6)%16 = 2
+        let (data, t1) = ring.read_since(t0);
+        assert_eq!(data, b"cdef01");
+        assert_eq!(t1, 18);
+
+        ring.unlink().unwrap();
+    }
+
+    #[test]
+    fn test_read_since_overrun() {
+        let shm_name = test_shm_name("rsover");
+        let ring = SharedRingBuffer::create(&shm_name, 8).unwrap();
+
+        let t0 = ring.total_written();
+        ring.write(b"0123456789abcdef"); // 16 bytes > capacity 8, overrun
+        let (data, t1) = ring.read_since(t0);
+        // Overrun: falls back to dump(), returns last 8 bytes
+        assert_eq!(data.len(), 8);
+        assert_eq!(t1, 16);
 
         ring.unlink().unwrap();
     }

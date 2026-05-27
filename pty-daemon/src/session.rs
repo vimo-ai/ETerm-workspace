@@ -58,6 +58,9 @@ pub struct Session {
     /// Previous owner fd (ETerm's control socket) — saved during baton-pass takeover
     /// so that baton-release can push ResumeAttach back to ETerm.
     pub previous_owner_fd: Option<RawFd>,
+    /// Timestamp of last baton-release — guards against immediate re-takeover
+    /// while ETerm is still processing ResumeAttach.
+    pub baton_release_at: Option<Instant>,
 }
 
 impl Session {
@@ -91,6 +94,7 @@ impl Session {
             terminal_state: Some(TerminalState::new(winsize.cols, winsize.rows)),
             ws_client_count: 0,
             previous_owner_fd: None,
+            baton_release_at: None,
         }
     }
 
@@ -288,6 +292,7 @@ mod tests {
             terminal_state: None,
             ws_client_count: 0,
             previous_owner_fd: None,
+            baton_release_at: None,
         };
 
         (session, TestShmGuard(shm_name))

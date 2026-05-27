@@ -479,7 +479,24 @@ impl Server {
                 self.running = false;
                 Response::ShuttingDown
             }
+
+            Request::Input { session_id, data } => {
+                self.handle_remote_input(session_id, &data)
+            }
         }
+    }
+
+    fn handle_remote_input(&self, session_id: Uuid, data_b64: &str) -> Response {
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                return Response::Error {
+                    message: format!("base64 decode: {e}"),
+                }
+            }
+        };
+        self.handle_ws_input(session_id, &bytes);
+        Response::InputAck { session_id }
     }
 
     fn handle_create(
@@ -1016,6 +1033,8 @@ impl Server {
         session.attach(prev_owner_fd);
         // Clear previous_owner_fd since we've restored the attach
         session.previous_owner_fd = None;
+        // Mark release time — guards against immediate re-takeover
+        session.baton_release_at = Some(Instant::now());
 
         // Store dup_fd in pending (not needed since we already sent it, but keep consistent)
         // The fd was already sent above, no need for pending_dup_fds.
@@ -1244,22 +1263,42 @@ impl Server {
     /// 2. If ETerm was previously attached and is waiting (release): baton-pass release
     /// 3. Otherwise: normal detach
     fn handle_ws_detach(&mut self, kq: RawFd, _client_id: u64, session_id: Uuid) -> Response {
-        let (is_eterm_attached, has_previous_owner) = self
+        // Decrement ws_client_count for the detaching client
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            if session.ws_client_count > 0 {
+                session.ws_client_count -= 1;
+                eprintln!(
+                    "[daemon] ws-detach: session {} ws_client_count decremented to {}",
+                    &session_id.to_string()[..8],
+                    session.ws_client_count
+                );
+            }
+        }
+
+        let (is_eterm_attached, has_previous_owner, in_cooldown) = self
             .sessions
             .get(&session_id)
-            .map_or((false, false), |s| {
+            .map_or((false, false, false), |s| {
+                let cooldown = s.baton_release_at
+                    .map_or(false, |t| t.elapsed() < Duration::from_secs(2));
                 (
                     s.state == SessionState::Attached,
                     s.previous_owner_fd.is_some(),
+                    cooldown,
                 )
             });
 
-        if is_eterm_attached {
+        if is_eterm_attached && !in_cooldown {
             // ETerm owns this session — initiate baton-pass takeover
             eprintln!(
                 "[daemon] ws-detach: session {session_id} is ETerm-attached, initiating baton-pass takeover"
             );
             self.handle_baton_takeover(kq, session_id)
+        } else if is_eterm_attached && in_cooldown {
+            eprintln!(
+                "[daemon] ws-detach: session {session_id} in baton-release cooldown, skipping takeover"
+            );
+            Response::Detached { session_id }
         } else if has_previous_owner {
             // iPhone is releasing — return session to ETerm via baton-pass release
             eprintln!(

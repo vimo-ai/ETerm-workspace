@@ -59,6 +59,13 @@ pub enum Request {
 
     /// 请求 daemon 优雅退出
     Shutdown,
+
+    /// 写入输入到 session 的 master_fd（takeover 期间 ETerm 输入转发）
+    Input {
+        session_id: Uuid,
+        /// base64-encoded input bytes
+        data: String,
+    },
 }
 
 /// Server-initiated push messages (daemon → ETerm)
@@ -154,6 +161,9 @@ pub enum Response {
 
     /// Daemon 正在关闭
     ShuttingDown,
+
+    /// Input 已投递
+    InputAck { session_id: Uuid },
 
     /// 错误
     Error { message: String },
