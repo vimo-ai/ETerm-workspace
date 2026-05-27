@@ -3,26 +3,30 @@
 //! 用于跨进程共享 PTY 输出数据。采用 128-byte cache line 对齐（Apple Silicon），
 //! 单 writer（daemon session）多 reader（MCP clients）模型。
 //!
-//! ## 内存布局
+//! ## 内存布局（v2, SeqLock）
 //! ```text
 //! Offset 0-127:    Header  { magic: u32, version: u32, capacity: u64, reserved }
-//! Offset 128-255:  Slot    { write_pos: AtomicU64, padding }
-//! Offset 256-383:  Slot    { total_written: AtomicU64, padding }
-//! Offset 384+:     data[0..capacity]
+//! Offset 128-255:  Slot    { sequence: AtomicU64, padding }   ← SeqLock 序列号
+//! Offset 256-383:  Slot    { write_pos: AtomicU64, padding }
+//! Offset 384-511:  Slot    { total_written: AtomicU64, padding }
+//! Offset 512+:     data[0..capacity]
 //! ```
+//!
+//! SeqLock 协议保证 reader 读取 write_pos 和 total_written 的一致性快照，
+//! 消除了 v1 中两次独立 atomic load 之间的 TOCTOU 竞态。
 
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicU64, Ordering};
 
-/// Header 大小：3 个 128-byte cache lines
-pub const HEADER_SIZE: usize = 384;
+/// Header 大小：4 个 128-byte cache lines
+pub const HEADER_SIZE: usize = 512;
 
 /// 共享内存魔数 "PTYD"
 pub const SHM_MAGIC: u32 = 0x50545944;
 
-/// 共享内存版本
-pub const SHM_VERSION: u32 = 1;
+/// 共享内存版本（v2: SeqLock 保护 write_pos + total_written）
+pub const SHM_VERSION: u32 = 2;
 
 /// 默认 ring buffer 容量（与 ring_buffer.rs 保持一致）
 pub const DEFAULT_RING_SIZE: usize = 1024 * 1024;
@@ -118,7 +122,7 @@ impl SharedRingBuffer {
             std::ptr::write_bytes(mmap_ptr.add(16), 0, 128 - 16);
         }
 
-        // 7. 初始化 atomic 字段（write_pos 和 total_written）
+        // 7. 初始化 atomic 字段（sequence, write_pos, total_written）
         let data_ptr = unsafe { mmap_ptr.add(HEADER_SIZE) };
         let ring = SharedRingBuffer {
             shm_name: shm_name.to_string(),
@@ -130,6 +134,7 @@ impl SharedRingBuffer {
             is_owner: true,
         };
 
+        ring.sequence_atomic().store(0, Ordering::Release);
         ring.write_pos_atomic().store(0, Ordering::Release);
         ring.total_written_atomic().store(0, Ordering::Release);
 
@@ -248,6 +253,7 @@ impl SharedRingBuffer {
     /// 写入数据到环形缓冲区（单 writer 模型）
     ///
     /// 自动处理回绕和覆盖。如果 data.len() >= capacity，只保留末尾数据。
+    /// 使用 SeqLock 协议保证 reader 读取 write_pos/total_written 的一致性。
     pub fn write(&self, data: &[u8]) {
         if data.is_empty() {
             return;
@@ -257,9 +263,9 @@ impl SharedRingBuffer {
         let write_pos_atom = self.write_pos_atomic();
         let total_atom = self.total_written_atomic();
 
-        // 读取当前位置
-        let mut write_pos = write_pos_atom.load(Ordering::Acquire);
-        let total_written = total_atom.load(Ordering::Acquire);
+        // writer 自己读自己的值，无竞态，用 Relaxed
+        let mut write_pos = write_pos_atom.load(Ordering::Relaxed);
+        let total_written = total_atom.load(Ordering::Relaxed);
 
         if len >= self.capacity {
             // 数据比 buffer 大，只保留末尾 capacity 字节
@@ -268,8 +274,10 @@ impl SharedRingBuffer {
                 std::ptr::copy_nonoverlapping(data[start..].as_ptr(), self.data_ptr, self.capacity);
             }
             write_pos = 0;
-            write_pos_atom.store(write_pos, Ordering::Release);
-            total_atom.store(total_written + len as u64, Ordering::Release);
+            self.seq_begin_write();
+            write_pos_atom.store(write_pos, Ordering::Relaxed);
+            total_atom.store(total_written + len as u64, Ordering::Relaxed);
+            self.seq_end_write();
             return;
         }
 
@@ -301,8 +309,10 @@ impl SharedRingBuffer {
         }
 
         write_pos = ((write_pos as usize + len) % self.capacity) as u64;
-        write_pos_atom.store(write_pos, Ordering::Release);
-        total_atom.store(total_written + len as u64, Ordering::Release);
+        self.seq_begin_write();
+        write_pos_atom.store(write_pos, Ordering::Relaxed);
+        total_atom.store(total_written + len as u64, Ordering::Relaxed);
+        self.seq_end_write();
     }
 
     /// Dump 当前有效数据（按时间顺序）
@@ -315,8 +325,7 @@ impl SharedRingBuffer {
             return Vec::new();
         }
 
-        let write_pos = self.write_pos_atomic().load(Ordering::Acquire);
-        let total_written = self.total_written_atomic().load(Ordering::Acquire);
+        let (write_pos, total_written) = self.read_snapshot();
 
         // 边界检查
         if write_pos >= self.capacity as u64 {
@@ -392,46 +401,6 @@ impl SharedRingBuffer {
         self.total_written_atomic().load(Ordering::Acquire)
     }
 
-    /// 增量读取自 `last_total` 以来写入的新字节。
-    ///
-    /// 返回 `(new_data, current_total_written)`。
-    /// 如果读者落后超过 capacity（ring overrun），fallback 到 dump()。
-    pub fn read_since(&self, last_total: u64) -> (Vec<u8>, u64) {
-        let total = self.total_written_atomic().load(Ordering::Acquire);
-        if total <= last_total {
-            return (Vec::new(), total);
-        }
-
-        let new_bytes = (total - last_total) as usize;
-        if new_bytes >= self.capacity {
-            return (self.dump(), total);
-        }
-
-        let write_pos = self.write_pos_atomic().load(Ordering::Acquire) as usize;
-
-        let start = if write_pos >= new_bytes {
-            write_pos - new_bytes
-        } else {
-            self.capacity - (new_bytes - write_pos)
-        };
-
-        let mut result = Vec::with_capacity(new_bytes);
-        unsafe {
-            if start + new_bytes <= self.capacity {
-                let slice = std::slice::from_raw_parts(self.data_ptr.add(start), new_bytes);
-                result.extend_from_slice(slice);
-            } else {
-                let first = self.capacity - start;
-                let tail = std::slice::from_raw_parts(self.data_ptr.add(start), first);
-                result.extend_from_slice(tail);
-                let head = std::slice::from_raw_parts(self.data_ptr, new_bytes - first);
-                result.extend_from_slice(head);
-            }
-        }
-
-        (result, total)
-    }
-
     /// 清空缓冲区
     pub fn clear(&self) {
         self.write_pos_atomic().store(0, Ordering::Release);
@@ -462,14 +431,98 @@ impl SharedRingBuffer {
         Ok(())
     }
 
-    /// 获取 write_pos atomic 引用（offset 128）
-    fn write_pos_atomic(&self) -> &AtomicU64 {
+    /// 增量读取自 `last_total` 以来写入的新字节。
+    ///
+    /// 返回 `(new_data, current_total_written)`。
+    /// 如果读者落后超过 capacity（ring overrun），fallback 到 dump()。
+    pub fn read_since(&self, last_total: u64) -> (Vec<u8>, u64) {
+        let (write_pos, total) = self.read_snapshot();
+        if total <= last_total {
+            return (Vec::new(), total);
+        }
+
+        let new_bytes = (total - last_total) as usize;
+        if new_bytes >= self.capacity {
+            return (self.dump(), total);
+        }
+
+        let wp = write_pos as usize;
+        let start = if wp >= new_bytes {
+            wp - new_bytes
+        } else {
+            self.capacity - (new_bytes - wp)
+        };
+
+        let mut result = Vec::with_capacity(new_bytes);
+        unsafe {
+            if start + new_bytes <= self.capacity {
+                let slice = std::slice::from_raw_parts(self.data_ptr.add(start), new_bytes);
+                result.extend_from_slice(slice);
+            } else {
+                let first = self.capacity - start;
+                let tail = std::slice::from_raw_parts(self.data_ptr.add(start), first);
+                result.extend_from_slice(tail);
+                let head = std::slice::from_raw_parts(self.data_ptr, new_bytes - first);
+                result.extend_from_slice(head);
+            }
+        }
+
+        (result, total)
+    }
+
+    /// 获取 sequence atomic 引用（offset 128, SeqLock 序列号）
+    fn sequence_atomic(&self) -> &AtomicU64 {
         unsafe { &*(self.mmap_ptr.add(128) as *const AtomicU64) }
     }
 
-    /// 获取 total_written atomic 引用（offset 256）
-    fn total_written_atomic(&self) -> &AtomicU64 {
+    /// 获取 write_pos atomic 引用（offset 256）
+    fn write_pos_atomic(&self) -> &AtomicU64 {
         unsafe { &*(self.mmap_ptr.add(256) as *const AtomicU64) }
+    }
+
+    /// 获取 total_written atomic 引用（offset 384）
+    fn total_written_atomic(&self) -> &AtomicU64 {
+        unsafe { &*(self.mmap_ptr.add(384) as *const AtomicU64) }
+    }
+
+    /// SeqLock: writer 开始写入（sequence 变为奇数，告知 reader 正在写入）
+    fn seq_begin_write(&self) {
+        self.sequence_atomic().fetch_add(1, Ordering::Release);
+        fence(Ordering::Release);
+    }
+
+    /// SeqLock: writer 结束写入（sequence 变为偶数，告知 reader 写入完成）
+    fn seq_end_write(&self) {
+        fence(Ordering::Release);
+        self.sequence_atomic().fetch_add(1, Ordering::Release);
+    }
+
+    /// SeqLock: reader 读取 write_pos 和 total_written 的一致性快照
+    ///
+    /// 通过 spin 循环确保不会读到 writer 正在修改中的中间状态。
+    fn read_snapshot(&self) -> (u64, u64) {
+        let seq_atom = self.sequence_atomic();
+        loop {
+            let seq1 = seq_atom.load(Ordering::Acquire);
+            if seq1 & 1 != 0 {
+                // writer 正在写入，spin 等待
+                std::hint::spin_loop();
+                continue;
+            }
+            fence(Ordering::Acquire);
+
+            let write_pos = self.write_pos_atomic().load(Ordering::Relaxed);
+            let total_written = self.total_written_atomic().load(Ordering::Relaxed);
+
+            fence(Ordering::Acquire);
+            let seq2 = seq_atom.load(Ordering::Relaxed);
+
+            if seq1 == seq2 {
+                return (write_pos, total_written);
+            }
+            // sequence 变了说明 writer 在中间修改过，重试
+            std::hint::spin_loop();
+        }
     }
 }
 
