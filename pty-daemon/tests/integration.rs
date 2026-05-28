@@ -479,7 +479,7 @@ fn test_winsize_update() {
 }
 
 // ===========================================================================
-// Baton-pass protocol tests
+// Detach winsize tests (previously part of baton-pass, now standalone)
 // ===========================================================================
 
 /// Helper: create a session with specific cols/rows
@@ -511,14 +511,14 @@ fn session_info(sock: &PathBuf, id: uuid::Uuid) -> Option<(u16, u16, String)> {
     }
 }
 
-/// B20: Detach with cols=0 rows=0 preserves the original winsize.
+/// Detach with cols=0 rows=0 preserves the original winsize.
 ///
 /// WS clients (iPhone) send cols=0, rows=0 when detaching to signal
 /// "don't change PTY dimensions". The daemon must keep the existing
 /// winsize unchanged.
 #[test]
-fn test_baton_detach_zero_size_preserves_winsize() {
-    let daemon = TestDaemon::start("baton-zero-ws");
+fn test_detach_zero_size_preserves_winsize() {
+    let daemon = TestDaemon::start("zero-ws");
     let id = create_with_size(daemon.sock(), 120, 40);
 
     // Attach so the session transitions to Attached state
@@ -556,13 +556,10 @@ fn test_baton_detach_zero_size_preserves_winsize() {
     assert_eq!(state, "Active");
 }
 
-/// B20 complement: Detach with non-zero cols/rows updates winsize.
-///
-/// Ensures the "preserve on zero" path doesn't accidentally prevent
-/// legitimate winsize changes.
+/// Detach with non-zero cols/rows updates winsize.
 #[test]
-fn test_baton_detach_nonzero_size_updates_winsize() {
-    let daemon = TestDaemon::start("baton-nonzero");
+fn test_detach_nonzero_size_updates_winsize() {
+    let daemon = TestDaemon::start("nonzero");
     let id = create_with_size(daemon.sock(), 80, 24);
 
     let session = AttachedSession::attach(daemon.sock(), id);
@@ -587,140 +584,13 @@ fn test_baton_detach_nonzero_size_updates_winsize() {
     assert_eq!(rows, 50, "rows must update to new value");
 }
 
-/// B3/B5: baton_detach state transitions — Attached -> Active with
-/// previous_owner_fd preserved.
-///
-/// When an ETerm client is attached and a baton-pass detach occurs, the
-/// session must transition from Attached to Active. The protocol-level
-/// effect is verified by checking that the session becomes re-attachable.
-#[test]
-fn test_baton_state_transition_attached_to_active() {
-    let daemon = TestDaemon::start("baton-state");
-    let id = Client::create(daemon.sock());
-
-    // Client A attaches
-    let session_a = AttachedSession::attach(daemon.sock(), id);
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Attached".into())
-    );
-
-    // A second attach attempt should be denied while A is attached
-    let resp = Client::oneshot(daemon.sock(), &Request::Attach { session_id: id });
-    assert!(
-        matches!(resp, Response::AttachDeny { .. }),
-        "expected AttachDeny while A is attached, got: {resp:?}"
-    );
-
-    // Client A sends Detach (simulating what happens after ForceDetach ack)
-    session_a.detach(daemon.sock(), id);
-    thread::sleep(Duration::from_millis(500));
-
-    // Session should now be Active, not Attached
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Active".into()),
-        "session must transition to Active after detach"
-    );
-
-    // A new client should now be able to attach
-    let session_b = AttachedSession::attach(daemon.sock(), id);
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Attached".into()),
-        "session must be Attached after new client attaches"
-    );
-
-    // Verify the session is still functional
-    session_b.write(b"echo BATON_STATE_OK\n");
-    let output = session_b.read_until("BATON_STATE_OK", Duration::from_secs(3));
-    assert!(output.contains("BATON_STATE_OK"), "got: {output}");
-}
-
-/// B3/B5 extended: Detach with grid_snapshot stores the snapshot.
-///
-/// When ETerm detaches with a grid snapshot (the baton), the daemon stores
-/// it. On the next attach, the snapshot is available for the new client.
-#[test]
-fn test_baton_detach_stores_grid_snapshot() {
-    let daemon = TestDaemon::start("baton-snap");
-    let id = Client::create(daemon.sock());
-    let session = AttachedSession::attach(daemon.sock(), id);
-
-    // Detach with a grid snapshot (base64-encoded payload)
-    let snapshot_data = "dGVzdCBzbmFwc2hvdCBkYXRh"; // "test snapshot data" in base64
-    let resp = Client::oneshot(
-        daemon.sock(),
-        &Request::Detach {
-            session_id: id,
-            cols: 80,
-            rows: 24,
-            grid_snapshot: Some(snapshot_data.to_string()),
-        },
-    );
-    assert!(matches!(resp, Response::Detached { .. }));
-
-    drop(session);
-    thread::sleep(Duration::from_millis(500));
-
-    // Verify session is Active after detach
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Active".into())
-    );
-}
-
-/// B10: ResumeAttach to disconnected ETerm — baton-release graceful fallback.
-///
-/// After a baton-pass takeover, if the original ETerm client disconnects
-/// before the WS client releases, the daemon must handle baton-release
-/// gracefully by falling back to normal detach instead of crashing or
-/// hanging when trying to push ResumeAttach to a dead socket.
-#[test]
-fn test_baton_release_to_disconnected_eterm() {
-    let daemon = TestDaemon::start("baton-disc");
-    let id = Client::create(daemon.sock());
-
-    // ETerm client attaches
-    let session = AttachedSession::attach(daemon.sock(), id);
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Attached".into())
-    );
-
-    // Simulate ETerm crash (close socket without sending Detach)
-    session.simulate_crash();
-
-    // Wait for daemon to detect the disconnect via EV_EOF
-    thread::sleep(Duration::from_secs(1));
-
-    // Session should be Active (daemon detected owner disconnect)
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Active".into()),
-        "session must fall back to Active after ETerm disconnects"
-    );
-
-    // Session should still be alive and re-attachable
-    let session2 = AttachedSession::attach(daemon.sock(), id);
-    session2.write(b"echo AFTER_DISC_OK\n");
-    let output = session2.read_until("AFTER_DISC_OK", Duration::from_secs(3));
-    assert!(output.contains("AFTER_DISC_OK"), "got: {output}");
-}
-
-/// B21: WinsizeUpdate with same size on non-attached session returns
+/// WinsizeUpdate with same size on non-attached session returns
 /// WinsizeUpdated (and triggers explicit SIGWINCH under the hood).
-///
-/// When a session is Active (not Attached), the daemon is responsible for
-/// ioctl + SIGWINCH. If the new size matches the current size, ioctl won't
-/// send SIGWINCH, so the daemon explicitly signals the child. We verify
-/// the protocol response is correct regardless.
 #[test]
 fn test_winsize_update_same_size_returns_updated() {
     let daemon = TestDaemon::start("ws-samesize");
     let id = create_with_size(daemon.sock(), 100, 30);
 
-    // Session is Active (not attached). Send WinsizeUpdate with the same size.
     let resp = Client::oneshot(
         daemon.sock(),
         &Request::WinsizeUpdate {
@@ -734,22 +604,19 @@ fn test_winsize_update_same_size_returns_updated() {
         "expected WinsizeUpdated for same-size update, got: {resp:?}"
     );
 
-    // Verify dimensions remain 100x30
     let (cols, rows, _) = session_info(daemon.sock(), id).unwrap();
     assert_eq!(cols, 100);
     assert_eq!(rows, 30);
 }
 
-/// B21 complement: WinsizeUpdate on an Attached session records
-/// the new dimensions but does NOT call ioctl (ETerm does it directly
-/// on its dup_fd). The daemon only records the change.
+/// WinsizeUpdate on an Attached session records the new dimensions
+/// but does NOT call ioctl (ETerm does it directly on its dup_fd).
 #[test]
 fn test_winsize_update_while_attached_records_only() {
     let daemon = TestDaemon::start("ws-attached");
     let id = create_with_size(daemon.sock(), 80, 24);
     let _session = AttachedSession::attach(daemon.sock(), id);
 
-    // Update winsize while attached
     let resp = Client::oneshot(
         daemon.sock(),
         &Request::WinsizeUpdate {
@@ -760,234 +627,23 @@ fn test_winsize_update_while_attached_records_only() {
     );
     assert!(matches!(resp, Response::WinsizeUpdated { .. }));
 
-    // Verify the recorded dimensions are updated
     let (cols, rows, state) = session_info(daemon.sock(), id).unwrap();
     assert_eq!(state, "Attached");
     assert_eq!(cols, 160);
     assert_eq!(rows, 48);
 }
 
-/// B7-like: ForceDetach push message can be encoded and decoded correctly.
-///
-/// Tests the wire protocol for Push/PushAck messages used in the baton-pass
-/// handshake. This validates the serialize/deserialize round-trip that the
-/// daemon relies on when sending ForceDetach and receiving DetachAck.
+/// Detach with zero size on a never-attached session preserves winsize.
 #[test]
-fn test_baton_push_protocol_roundtrip() {
-    use pty_daemon::protocol::{Push, PushAck};
-
-    let session_id = uuid::Uuid::new_v4();
-
-    // Test ForceDetach encoding/decoding
-    let push = Push::ForceDetach { session_id };
-    let encoded = protocol::encode_message(&push);
-    let (decoded, consumed) = protocol::try_decode_message::<Push>(&encoded).unwrap();
-    let decoded = decoded.unwrap();
-    assert_eq!(consumed, encoded.len());
-    match decoded {
-        Push::ForceDetach { session_id: sid } => {
-            assert_eq!(sid, session_id);
-        }
-        other => panic!("expected ForceDetach, got: {other:?}"),
-    }
-
-    // Test DetachAck encoding/decoding
-    let snapshot = Some("c25hcHNob3Q=".to_string()); // "snapshot" in base64
-    let ack = PushAck::DetachAck {
-        session_id,
-        grid_snapshot: snapshot.clone(),
-    };
-    let encoded_ack = protocol::encode_message(&ack);
-    let (decoded_ack, consumed_ack) =
-        protocol::try_decode_message::<PushAck>(&encoded_ack).unwrap();
-    let decoded_ack = decoded_ack.unwrap();
-    assert_eq!(consumed_ack, encoded_ack.len());
-    match decoded_ack {
-        PushAck::DetachAck {
-            session_id: sid,
-            grid_snapshot: gs,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(gs, snapshot);
-        }
-        other => panic!("expected DetachAck, got: {other:?}"),
-    }
-
-    // Test ResumeAttach encoding/decoding
-    let resume = Push::ResumeAttach {
-        session_id,
-        cols: 120,
-        rows: 40,
-        child_pid: 12345,
-        shm_name: "test-shm".to_string(),
-        grid_snapshot: Some("cmVzdW1lX2RhdGE=".to_string()),
-    };
-    let encoded_resume = protocol::encode_message(&resume);
-    let (decoded_resume, _) = protocol::try_decode_message::<Push>(&encoded_resume).unwrap();
-    let decoded_resume = decoded_resume.unwrap();
-    match decoded_resume {
-        Push::ResumeAttach {
-            session_id: sid,
-            cols,
-            rows,
-            child_pid,
-            shm_name,
-            grid_snapshot,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(cols, 120);
-            assert_eq!(rows, 40);
-            assert_eq!(child_pid, 12345);
-            assert_eq!(shm_name, "test-shm");
-            assert!(grid_snapshot.is_some());
-        }
-        other => panic!("expected ResumeAttach, got: {other:?}"),
-    }
-
-    // Test ResumeAck encoding/decoding
-    let resume_ack = PushAck::ResumeAck { session_id };
-    let encoded_rack = protocol::encode_message(&resume_ack);
-    let (decoded_rack, _) = protocol::try_decode_message::<PushAck>(&encoded_rack).unwrap();
-    let decoded_rack = decoded_rack.unwrap();
-    match decoded_rack {
-        PushAck::ResumeAck { session_id: sid } => {
-            assert_eq!(sid, session_id);
-        }
-        other => panic!("expected ResumeAck, got: {other:?}"),
-    }
-}
-
-/// B7/B10 combined: ForceDetach to a connected client over a real socket.
-///
-/// Simulates the daemon side of the baton-pass handshake: the test opens
-/// a client connection, attaches to a session, then manually writes a
-/// ForceDetach push message to the client's control stream. The client
-/// side reads the push, verifies it's a valid ForceDetach, and sends back
-/// a DetachAck.
-#[test]
-fn test_baton_force_detach_push_over_socket() {
-
-    let daemon = TestDaemon::start("baton-push");
-    let id = Client::create(daemon.sock());
-
-    // Open a persistent connection (simulating ETerm's control stream)
-    let mut stream = UnixStream::connect(daemon.sock()).expect("connect for attach");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-
-    // Attach via this persistent connection
-    let resp = Client::send(&mut stream, &Request::Attach { session_id: id });
-    match resp {
-        Response::AttachReady { session_id, .. } => {
-            assert_eq!(session_id, id);
-            // Receive the dup_fd (must consume it to keep the protocol in sync)
-            let pty_fd = fd_passing::recv_fd(stream.as_raw_fd()).expect("recv_fd");
-            assert!(pty_fd >= 0);
-            // Clean up the pty_fd
-            unsafe { libc::close(pty_fd); }
-        }
-        other => panic!("expected AttachReady, got: {other:?}"),
-    }
-
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Attached".into())
-    );
-
-    // Now send a Detach from a DIFFERENT connection (simulating a second
-    // client requesting the session). This will trigger the daemon's normal
-    // Detach path (which clears owner_fd). We use this to verify the session
-    // transitions correctly.
-    let resp = Client::oneshot(
-        daemon.sock(),
-        &Request::Detach {
-            session_id: id,
-            cols: 0,
-            rows: 0,
-            grid_snapshot: None,
-        },
-    );
-    assert!(
-        matches!(resp, Response::Detached { .. }),
-        "expected Detached, got: {resp:?}"
-    );
-
-    // Wait for state change
-    thread::sleep(Duration::from_millis(500));
-
-    // Session should be Active now
-    assert_eq!(
-        Client::session_state(daemon.sock(), id),
-        Some("Active".into()),
-        "session must be Active after detach"
-    );
-
-    // The persistent stream is still open. Close it explicitly.
-    drop(stream);
-
-    // Session survives after client disconnect
-    thread::sleep(Duration::from_millis(500));
-    assert_eq!(Client::session_count(daemon.sock()), 1);
-}
-
-/// B3: Multiple sequential attach/detach cycles preserve session integrity.
-///
-/// Verifies that repeated baton-pass-like cycles (attach by A, detach,
-/// attach by B, detach) don't leak state or corrupt the session.
-#[test]
-fn test_baton_multiple_attach_detach_cycles() {
-    let daemon = TestDaemon::start("baton-cycle");
-    let id = Client::create(daemon.sock());
-
-    for i in 0..5 {
-        // Attach
-        let session = AttachedSession::attach(daemon.sock(), id);
-        assert_eq!(
-            Client::session_state(daemon.sock(), id),
-            Some("Attached".into()),
-            "cycle {i}: must be Attached after attach"
-        );
-
-        // Write a unique marker
-        let marker = format!("CYCLE_MARKER_{i}\n");
-        session.write(marker.as_bytes());
-        let output = session.read_until(&format!("CYCLE_MARKER_{i}"), Duration::from_secs(3));
-        assert!(
-            output.contains(&format!("CYCLE_MARKER_{i}")),
-            "cycle {i}: marker not found in output: {output}"
-        );
-
-        // Detach
-        session.detach(daemon.sock(), id);
-        thread::sleep(Duration::from_millis(300));
-        assert_eq!(
-            Client::session_state(daemon.sock(), id),
-            Some("Active".into()),
-            "cycle {i}: must be Active after detach"
-        );
-    }
-
-    // Session should still be alive after 5 cycles
-    assert_eq!(Client::session_count(daemon.sock()), 1);
-}
-
-/// B20 edge case: Create session, never attach, send Detach with zero size.
-///
-/// An Active session that was never attached should handle a Detach request
-/// gracefully (the session has no owner_fd, so detach is a no-op on state).
-#[test]
-fn test_baton_detach_never_attached_session() {
-    let daemon = TestDaemon::start("baton-noattach");
+fn test_detach_never_attached_session() {
+    let daemon = TestDaemon::start("noattach");
     let id = create_with_size(daemon.sock(), 100, 50);
 
-    // Session starts as Active, not Attached
     assert_eq!(
         Client::session_state(daemon.sock(), id),
         Some("Active".into())
     );
 
-    // Send Detach with zero size on a session that was never attached
     let resp = Client::oneshot(
         daemon.sock(),
         &Request::Detach {
@@ -1002,7 +658,6 @@ fn test_baton_detach_never_attached_session() {
         "expected Detached for never-attached session, got: {resp:?}"
     );
 
-    // Winsize must be preserved (still 100x50)
     let (cols, rows, _) = session_info(daemon.sock(), id).unwrap();
     assert_eq!(cols, 100, "cols preserved on never-attached detach");
     assert_eq!(rows, 50, "rows preserved on never-attached detach");

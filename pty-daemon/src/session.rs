@@ -55,12 +55,6 @@ pub struct Session {
     pub terminal_state: Option<TerminalState>,
     /// Number of WebSocket clients currently attached to this session
     pub ws_client_count: u32,
-    /// Previous owner fd (ETerm's control socket) — saved during baton-pass takeover
-    /// so that baton-release can push ResumeAttach back to ETerm.
-    pub previous_owner_fd: Option<RawFd>,
-    /// Timestamp of last baton-release — guards against immediate re-takeover
-    /// while ETerm is still processing ResumeAttach.
-    pub baton_release_at: Option<Instant>,
 }
 
 impl Session {
@@ -93,8 +87,6 @@ impl Session {
             grid_snapshot: None,
             terminal_state: Some(TerminalState::new(winsize.cols, winsize.rows)),
             ws_client_count: 0,
-            previous_owner_fd: None,
-            baton_release_at: None,
         }
     }
 
@@ -118,18 +110,6 @@ impl Session {
         if snapshot.is_some() {
             self.grid_snapshot = snapshot;
         }
-    }
-
-    /// Baton-pass detach: save previous owner before clearing, for later baton-release.
-    ///
-    /// Call this instead of `detach()` when the detach is caused by a WS takeover
-    /// (iPhone takes over from ETerm). The previous_owner_fd is used to push
-    /// ResumeAttach back to ETerm when the iPhone releases.
-    pub fn baton_detach(&mut self, snapshot: Option<String>) {
-        if self.owner_fd.is_some() {
-            self.previous_owner_fd = self.owner_fd;
-        }
-        self.detach(snapshot);
     }
 
     /// 降级到 idle（Tier 2 → Tier 3）
@@ -211,11 +191,6 @@ impl SessionManager {
         v
     }
 
-    /// Mutable access to all sessions (for bulk updates like clearing previous_owner_fd)
-    pub fn list_mut(&mut self) -> impl Iterator<Item = &mut Session> {
-        self.sessions.values_mut()
-    }
-
     pub fn count(&self) -> usize {
         self.sessions.len()
     }
@@ -291,8 +266,6 @@ mod tests {
             grid_snapshot: None,
             terminal_state: None,
             ws_client_count: 0,
-            previous_owner_fd: None,
-            baton_release_at: None,
         };
 
         (session, TestShmGuard(shm_name))
@@ -310,70 +283,19 @@ mod tests {
         }
     }
 
-    // B3: baton_detach preserves previous_owner_fd
+    // B5: Normal detach clears owner_fd
     #[test]
-    fn baton_detach_preserves_previous_owner_fd() {
-        let (mut session, _guard) = test_session();
-        let fake_owner_fd: RawFd = 42;
-
-        // Simulate an attached state with an owner
-        session.attach(fake_owner_fd);
-        assert_eq!(session.state, SessionState::Attached);
-        assert_eq!(session.owner_fd, Some(fake_owner_fd));
-        assert_eq!(session.previous_owner_fd, None);
-
-        // Baton-detach (iPhone takeover) should save the owner before clearing
-        session.baton_detach(Some("snapshot_from_eterm".to_string()));
-
-        assert_eq!(session.owner_fd, None, "owner_fd must be cleared");
-        assert_eq!(
-            session.previous_owner_fd,
-            Some(fake_owner_fd),
-            "previous_owner_fd must preserve the original owner"
-        );
-        assert_eq!(session.state, SessionState::Active);
-        assert_eq!(
-            session.grid_snapshot,
-            Some("snapshot_from_eterm".to_string())
-        );
-    }
-
-    // B3 extended: baton_detach with None snapshot preserves existing snapshot
-    #[test]
-    fn baton_detach_with_none_snapshot_keeps_existing() {
-        let (mut session, _guard) = test_session();
-
-        session.grid_snapshot = Some("old_snapshot".to_string());
-        session.attach(10);
-        session.baton_detach(None);
-
-        // detach() only updates grid_snapshot when Some is passed
-        assert_eq!(
-            session.grid_snapshot,
-            Some("old_snapshot".to_string()),
-            "existing snapshot must be preserved when baton_detach passes None"
-        );
-        assert_eq!(session.previous_owner_fd, Some(10));
-    }
-
-    // B5: Normal detach does not set previous_owner_fd
-    #[test]
-    fn normal_detach_leaves_previous_owner_fd_none() {
+    fn normal_detach_clears_owner_fd() {
         let (mut session, _guard) = test_session();
         let fake_owner_fd: RawFd = 99;
 
         session.attach(fake_owner_fd);
         assert_eq!(session.owner_fd, Some(fake_owner_fd));
-        assert_eq!(session.previous_owner_fd, None);
 
         // Normal detach (user-initiated or crash recovery)
         session.detach(Some("normal_snapshot".to_string()));
 
         assert_eq!(session.owner_fd, None, "owner_fd must be cleared");
-        assert_eq!(
-            session.previous_owner_fd, None,
-            "normal detach must not touch previous_owner_fd"
-        );
         assert_eq!(session.state, SessionState::Active);
         assert_eq!(
             session.grid_snapshot,
@@ -381,40 +303,17 @@ mod tests {
         );
     }
 
-    // B5 extended: repeated normal detach never populates previous_owner_fd
+    // B5 extended: repeated normal detach cycles work correctly
     #[test]
-    fn repeated_normal_detach_keeps_previous_owner_none() {
+    fn repeated_normal_detach_cycles() {
         let (mut session, _guard) = test_session();
 
         // Cycle: attach → detach → attach → detach
         session.attach(50);
         session.detach(None);
-        assert_eq!(session.previous_owner_fd, None);
 
         session.attach(60);
         session.detach(Some("snap2".to_string()));
-        assert_eq!(session.previous_owner_fd, None);
         assert_eq!(session.grid_snapshot, Some("snap2".to_string()));
-    }
-
-    // Baton-detach when owner_fd is already None should not overwrite previous_owner_fd
-    #[test]
-    fn baton_detach_without_owner_does_not_clobber_previous() {
-        let (mut session, _guard) = test_session();
-
-        // Set a previous_owner_fd from an earlier baton cycle
-        session.previous_owner_fd = Some(77);
-
-        // Session is not currently attached (owner_fd is None)
-        assert_eq!(session.owner_fd, None);
-
-        // baton_detach should skip the save (guarded by `if self.owner_fd.is_some()`)
-        session.baton_detach(None);
-
-        assert_eq!(
-            session.previous_owner_fd,
-            Some(77),
-            "must not clobber previous_owner_fd when owner_fd is None"
-        );
     }
 }
