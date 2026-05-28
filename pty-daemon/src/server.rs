@@ -1316,6 +1316,19 @@ impl Server {
     /// Unlike Unix socket attach, the daemon stays active and proxies PTY I/O.
     /// Multiple WS clients and one Unix client can be attached simultaneously.
     fn handle_ws_attach(&mut self, kq: RawFd, client_id: u64, session_id: Uuid) -> Response {
+        // If session is ETerm-attached, automatically trigger baton-pass so daemon
+        // becomes the sole reader and can broadcast to WS subscribers.
+        {
+            let is_attached = self.sessions.get(&session_id)
+                .map_or(false, |s| s.state == SessionState::Attached);
+            if is_attached {
+                eprintln!(
+                    "[daemon] ws-attach: session {session_id} is ETerm-attached, auto baton-pass"
+                );
+                let _takeover_resp = self.handle_baton_takeover(kq, session_id);
+            }
+        }
+
         let session = match self.sessions.get_mut(&session_id) {
             Some(s) => s,
             None => {
@@ -1353,16 +1366,10 @@ impl Server {
             session.grid_snapshot.take()
         };
 
-        // If the session is currently in Active/Idle, ensure master_fd is registered in kqueue
-        // so the daemon can read output and broadcast to WS subscribers.
+        // Ensure master_fd is registered in kqueue so daemon reads and broadcasts
         if session.state != SessionState::Attached {
             let _ = kq_register(kq, session.master_fd, libc::EVFILT_READ, libc::EV_ADD);
         }
-        // If the session is Attached by a Unix client, we still accept the WS attach.
-        // The Unix client is reading the master_fd directly; the daemon will NOT be reading
-        // master_fd (it's unregistered from kqueue). So the WS client won't get real-time
-        // output until the Unix client detaches. This is a known limitation that could be
-        // addressed in a future multi-reader architecture.
 
         // Track the WS client attachment (subscription is set up by the ws_server module)
         session.ws_client_count += 1;
